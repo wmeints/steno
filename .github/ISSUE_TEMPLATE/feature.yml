@@ -1,0 +1,35 @@
+name: Feature Request
+description: Propose a new feature for the project.
+labels: [feature]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to propose a feature. Please fill out the sections below.
+  - type: textarea
+    id: background
+    attributes:
+      label: Background
+      description: Provide the context or motivation for this feature. What problem are you trying to solve, or what gap are you trying to fill?
+      placeholder: Describe the current situation and why this feature is needed.
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: Describe what this feature should achieve.
+      placeholder: A clear statement of the intended outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: List the conditions that must be met for this feature to be considered complete.
+      placeholder: |
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+        - [ ] Criterion 3
+    validations:
+      required: true
