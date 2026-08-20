@@ -1,7 +1,7 @@
 # Introduction and goals
 
 This directory contains the architecture documentation for Steno, a 
-text-to-speech solution for Linux based on local models. Users can press a 
+dictation solution for Linux based on local models. Users can press a 
 hotkey to record audio that is then transcribed and submitted to the input 
 device so that the text is submitted to the currently active terminal or 
 application window.

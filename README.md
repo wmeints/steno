@@ -1,6 +1,6 @@
 # Steno
 
-Welcome to Steno, an open-source text-to-speech tool for Linux. With this tool 
+Welcome to Steno, an open-source dictation tool for Linux. With this tool 
 you can talk to your computer and it will type in what you said in any 
 application you're working with.
 
@@ -14,7 +14,7 @@ Mac, but not for Linux. So I decided to roll my own.
 
 ### Goals for this application
 
-- Provide a TTS interface for Linux computers that supports a wide range of 
+- Provide a dictation interface for Linux computers that supports a wide range of 
   applications e.g. terminals, web browsers, text editors, and desktop 
   applications.
 
