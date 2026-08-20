@@ -23,6 +23,14 @@ body:
     validations:
       required: true
   - type: textarea
+    id: documentation
+    attributes:
+      label: Design documentation
+      description: List the links to important design documentation such as examples and docs.
+      placeholder: One or more links to docs or examples
+    validations:
+      required: false
+  - type: textarea
     id: acceptance-criteria
     attributes:
       label: Acceptance Criteria
