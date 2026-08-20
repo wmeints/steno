@@ -1,0 +1,10 @@
+# Lefthook git hooks configuration
+# Docs: https://github.com/evilmartians/lefthook
+#
+# Enforce Conventional Commits on every commit message via commitlint.
+# The `commit-msg` hook receives the path to the pending commit message
+# file as `{1}` (git passes it as the first argument); commitlint's
+# `--edit` validates it in place and rejects the commit on failure.
+
+commit-msg:
+  run: npx --no-install commitlint --edit {1}
