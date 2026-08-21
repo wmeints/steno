@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+kbd = "0.2.0"
+kbd-global = { version = "0.2.0", features = ["grab"] }
+log = "0.4.27"
+env_logger = "0.11"
