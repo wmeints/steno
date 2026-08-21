@@ -229,13 +229,58 @@ Consolidate, do not just concatenate: deduplicate a finding reported by two lens
 into one (noting it came from multiple lenses), and order by severity. Keep every
 `file:line` reference intact.
 
-### 6. Turn findings into line-anchored comments on the PR
+### 6. Confidence-screen the findings
 
-Turn the consolidated findings into **detailed review comments**, each **anchored
-to the exact lines** it concerns, and post them to the PR.
+Before posting, run one pass over the consolidated findings to make sure a
+comment is not posted for a low-confidence finding. This pass exists because
+posting noise is cheap to skip and expensive to undo: an unposted comment can
+still be raised in the overall comment or the report, but a posted comment
+cannot be taken back.
 
-- **Inline (line-anchored) comments** — the primary output. For each finding that
-  has a concrete location, post a comment anchored to that line range of the
+For **every** consolidated finding, score it on four axes. A finding is
+**low-confidence** if it fails any one:
+
+- **Substantiation** — is the claim grounded in the actual code the agent read,
+  or is it `[INFERENCE]` / reasoned from a summary? A pure `[INFERENCE]` with no
+  code to back it is low-confidence.
+- **Reproducibility** — can the exact `file:line` be re-read and confirmed to
+  match the claim? A line number the agent could not re-verify (a number the
+  agent may have invented) is low-confidence.
+- **Impact** — does the finding change behavior, or is it cosmetic (a comment
+  wording, a style nit with no functional effect)? Cosmetics are low-confidence
+  for a *comment* even if not low-severity.
+- **Independence** — is the finding cross-confirmed by more than one lens, or is
+  it a single-lens assertion about something the other lenses did not flag? A
+  lone, single-lens claim on a subtle or non-obvious issue is low-confidence
+  unless its evidence is airtight.
+
+For each finding:
+
+- **Post as an inline comment** — only high-confidence findings: substantiated
+  in the code, reproducible at a real `file:line`, non-cosmetic, and either
+  cross-confirmed or airtight.
+- **Fold into the overall review comment** — low-confidence findings that still
+  say something worth a reader knowing (e.g. a plausible-but-unverified
+  concern, a single-lens flag, a cosmetic nit). State it as a low-confidence
+  observation, not as a defect.
+- **Drop** — a finding that is both low-confidence *and* has no information
+  value (e.g. a pure style nit the reviewer would not act on). Never post it.
+
+Do **not** silently drop a low-confidence finding that carries a real
+concern — route it to the overall comment so it is not lost. Only drop
+genuinely empty ones. Record the outcome (posted / folded / dropped) so
+step 8's report can state how many of each landed.
+
+
+### 7. Turn findings into line-anchored comments on the PR
+
+Post only the findings that step 6 marked **post** (high-confidence), each
+**anchored to the exact lines** it concerns. The findings step 6 marked
+**fold** go into the overall review comment (below); the findings it marked
+**drop** are not posted.
+
+- **Inline (line-anchored) comments** — the primary output. For each finding the
+  confidence pass kept, post a comment anchored to that line range of the
   PR's diff:
 
   ```bash
@@ -271,9 +316,12 @@ to the exact lines** it concerns, and post them to the PR.
     fold it into the overall review comment (below) instead.
 
 - **Overall review comment** — one summary comment on the PR (not per-line): the
-  consolidated verdict, the highest-priority issues, and a short index of what
-  each lens found. This gives a reader the whole picture; the inline comments
-  carry the line-level detail. Post it as the review body:
+  consolidated verdict, the highest-priority issues, the findings the
+  confidence pass folded in, and a short index of what each lens found.
+  Folding a low-confidence finding into this comment (rather than posting it
+  as a line comment) is how it is reported without anchoring noise to a line.
+  This gives a reader the whole picture; the inline comments carry the
+  line-level detail. Post it as the review body:
 
   ```bash
   gh pr review <pr-number> --repo <owner>/<repo> --body-file <report-file> --comment
@@ -283,7 +331,7 @@ to the exact lines** it concerns, and post them to the PR.
   findings into a single giant comment; the value is the line-level anchoring.
   Group closely related lines, but never drop a line anchor.
 
-### 7. Verify and report
+### 8. Verify and report
 
 Confirm the comments landed and report back.
 
@@ -292,8 +340,9 @@ gh pr view <pr-number> --repo <owner>/<repo> --json number,url
 gh api repos/<owner>/<repo>/pulls/<pr-number>/comments -q '.[].id'   # inline comments
 ```
 
-- Report the PR URL, the number of inline comments posted, and the overall
-  verdict from the consolidated report.
+- Report the PR URL, the overall verdict from the consolidated report, and the
+  confidence-pass outcome: how many findings were posted as inline comments,
+  how many were folded into the overall comment, and how many were dropped.
 - If any comment failed to post, report the failure and the finding it belonged
   to — do not silently drop it.
 
@@ -305,6 +354,12 @@ gh api repos/<owner>/<repo>/pulls/<pr-number>/comments -q '.[].id'   # inline co
 - **Consolidate before posting.** Post to the PR only after every lens has
   delivered and the single consolidated report is written. Never post from a
   partial batch.
+- **Screen for confidence before posting.** Never post a line comment for a
+  finding that fails the step 6 confidence pass (`[INFERENCE]`-only,
+  non-reproducible line, cosmetic, or a lone unconfirmed claim). Fold a
+  real concern into the overall comment or drop it — do not post it as a
+  line comment. A posted comment cannot be retracted, so err toward not
+  posting.
 - **Anchor to lines.** Every inline comment is anchored to the exact `file:line`
   of its finding. A finding with no concrete line goes into the overall comment,
   not posted as a line comment with a guessed line.
