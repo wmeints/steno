@@ -19,10 +19,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Provision the parakeet model before the hotkey is bound, so the model is
     // ready before transcription can be attempted. A failure here is fatal: the
     // daemon cannot transcribe without the model files.
-    let model_result = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
+    //
+    // A single-threaded runtime suffices: provisioning is one-time, sequential
+    // HTTP, and the runtime is dropped before the synchronous hotkey loop, so a
+    // multi-threaded runtime would only add overhead for work it does not use.
+    let model_result = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
         .build()?
-        .block_on(model::ensure_provisioned(&model::model_dir()));
+        .block_on(model::ensure_provisioned(&model::model_dir()?));
     if let Err(error) = model_result {
         eprintln!("model: {error}");
         std::process::exit(1);
