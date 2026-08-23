@@ -1,6 +1,7 @@
 use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum RecorderCommand {
     Start,
     Stop,
@@ -59,7 +60,7 @@ mod tests {
     fn test_start_without_recording() {
         let mut subject = Recorder::new();
 
-        assert_eq!(subject.is_recording, false);
+        assert!(!subject.is_recording);
 
         subject.handle_command(RecorderCommand::Start);
 
@@ -70,7 +71,7 @@ mod tests {
     fn test_stop_while_recording() {
         let mut subject = Recorder::new();
 
-        assert_eq!(subject.is_recording, false);
+        assert!(!subject.is_recording);
 
         subject.handle_command(RecorderCommand::Start);
         subject.handle_command(RecorderCommand::Stop);
