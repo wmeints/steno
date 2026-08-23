@@ -4,7 +4,7 @@
 
 The `steno-daemon` capability to observe global keyboard state and detect when the user activates the capture hotkey (<kbd>Ctrl</kbd>+<kbd>Super</kbd>), so the daemon can react to the user's intent to record and, later, release the recording.
 
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Capture key definition
 
@@ -49,22 +49,3 @@ The daemon MUST detect when the capture key transitions from active to inactive 
 
 - **WHEN** <kbd>Ctrl</kbd> and <kbd>Super</kbd> are held and the user releases only <kbd>Ctrl</kbd> (or only <kbd>Super</kbd>)
 - **THEN** the daemon detects a capture key release
-
-### Requirement: Capture key event logging
-
-The daemon MUST log a distinct entry when the capture key is pressed and a distinct entry when the capture key is released, so an operator can verify interception from the daemon's log output.
-
-#### Scenario: Press is logged
-
-- **WHEN** the capture key transitions from inactive to active
-- **THEN** the daemon logs a press event
-
-#### Scenario: Release is logged
-
-- **WHEN** the capture key transitions from active to inactive
-- **THEN** the daemon logs a release event
-
-#### Scenario: Repeated press and release cycles
-
-- **WHEN** the user repeatedly presses and releases the capture key
-- **THEN** the daemon logs a press event and a release event for each complete cycle, in order

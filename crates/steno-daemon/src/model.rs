@@ -1,113 +1,45 @@
-//! Parakeet model provisioning.
-//!
-//! The `parakeet_rs` transcription model does not fetch its own files, so the
-//! daemon provisions them at startup: when the required ONNX files are absent
-//! from the model directory they are downloaded from HuggingFace and verified
-//! against their declared size before the daemon binds the capture hotkey.
-//!
-//! The source repository and the target directory are fixed by convention
-//! (`altunenes/parakeet-rs` / `nemotron-3.5-asr-streaming-0.6b-onnx` and
-//! `~/.config/steno/models/parakeet`), not by configuration.
+use std::path::{Path, PathBuf};
 
-use std::fs::File;
-use std::io::Write;
-use std::path::Path;
-use std::path::PathBuf;
+use anyhow::{Context, Result};
+use hf_hub::{
+    HFClient,
+    progress::{DownloadEvent, ProgressEvent, ProgressHandler},
+    repository::{HFRepository, RepoTypeModel},
+};
 
-use rand::Rng;
-
-use futures::StreamExt;
-
-use hf_hub::progress::{ProgressEvent, ProgressHandler};
-use hf_hub::repository::download::HFByteStream;
-
-/// The HuggingFace repository that holds the parakeet ONNX model files.
-pub const MODEL_REPOSITORY: &str = "altunenes/parakeet-rs";
-
-/// The sub-directory of the repository that holds the model files, used as the
-/// prefix of every file's path within the repository.
-pub const MODEL_DIR: &str = "nemotron-3.5-asr-streaming-0.6b-onnx";
-
-/// The Git revision (branch) the model files are resolved from.
-pub const MODEL_BRANCH: &str = "main";
-
-/// The parakeet model files the daemon requires, in order.
-pub const REQUIRED_FILES: &[&str] = &[
-    "config.json",
-    "tokenizer.model",
-    "encoder.onnx",
-    "decoder_joint.onnx",
-    "encoder.onnx.data",
-];
-
-/// The known byte sizes of the required model files, keyed by file name.
+/// Required model files as (repository path in `altunenes/parakeet-rs`,
+/// pinned expected byte size).
 ///
-/// These are the sizes the files have on the source repository, recorded as a
-/// trusted constant rather than read from the server. A present file is only
-/// treated as ready when its size matches, and a downloaded file is only moved
-/// into place when its byte count matches, so a partial or corrupt file is
-/// rejected instead of being mistaken for complete. `None` means the size is
-/// unknown and cannot be verified.
-pub const EXPECTED_SIZES: &[(&str, Option<u64>)] = &[
-    ("config.json", Some(2969)),
-    ("tokenizer.model", Some(416233)),
-    ("encoder.onnx", Some(44000192)),
-    ("decoder_joint.onnx", Some(101807616)),
-    ("encoder.onnx.data", Some(2439900152)),
+/// The `tdt/` prefix is the repository's storage location: it belongs to
+/// the download URL only. Files are stored flat in the model directory
+/// under their basename — that is the layout the ParakeetTDT model reads.
+///
+/// The set is exactly what `ParakeetTDT::from_pretrained` loads: the
+/// encoder, its external-data file, the joint decoder, and the vocab.
+/// The int8 variants are only fallback candidates of the loader, shadowed
+/// by the full-precision names, and `nemo128.onnx` is not referenced by
+/// the transcription model, so neither is provisioned.
+///
+/// Sizes pinned from the HuggingFace repository API, 2026-08-23.
+const REQUIRED_FILES: &[(&str, u64)] = &[
+    ("tdt/decoder_joint-model.onnx", 72_520_893),
+    ("tdt/encoder-model.onnx", 41_770_866),
+    ("tdt/encoder-model.onnx.data", 2_435_420_160),
+    ("tdt/vocab.txt", 93_939),
 ];
 
-/// A file the daemon needs to download for the model to be ready.
-#[derive(Debug)]
-pub struct ModelFile {
-    /// The file name inside the repository, e.g. `config.json`.
-    pub name: &'static str,
-    /// The known byte size of the file, or `None` if it cannot be verified.
-    pub size: Option<u64>,
-}
+const REPO_OWNER: &str = "altunenes";
 
-impl ModelFile {
-    /// The relative path of the file within the repository, e.g.
-    /// `nemotron-3.5-asr-streaming-0.6b-onnx/config.json`.
-    pub fn repo_path(&self) -> String {
-        format!("{MODEL_DIR}/{}", self.name)
-    }
+const REPO_NAME: &str = "parakeet-rs";
 
-    /// Whether the file is present at `path` with its expected size.
-    ///
-    /// A file whose size is unknown is never treated as ready, so it is
-    /// downloaded and its byte count is checked rather than being mistaken for
-    /// complete.
-    pub fn is_ready(&self, path: &Path) -> bool {
-        match std::fs::metadata(path.join(self.name)) {
-            Ok(metadata) => metadata.is_file() && self.size == Some(metadata.len()),
-            Err(_) => false,
-        }
-    }
-}
-
-/// The error type for provisioning failures.
-pub type Error = hf_hub::HFError;
-
-/// The result of provisioning a single file: the resolved local path and its
-/// verified byte size.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Downloaded {
-    /// The local path the file was downloaded to.
-    pub path: PathBuf,
-    /// The verified byte size of the file, equal to the server-declared size.
-    pub size: u64,
-}
-
-/// Logs download progress to the daemon's log output, so the (large) one-time
-/// download is observable instead of appearing to hang.
 struct LogProgress;
 
 impl ProgressHandler for LogProgress {
-    fn on_progress(&self, event: &ProgressEvent) {
-        if let ProgressEvent::Download(hf_hub::progress::DownloadEvent::Progress { files }) = event {
+    fn on_progress(&self, event: &hf_hub::progress::ProgressEvent) {
+        if let ProgressEvent::Download(DownloadEvent::Progress { files }) = event {
             for file in files {
-                log::info!(
-                    "model: {} {}/{} bytes",
+                tracing::info!(
+                    "file: {} {}/{} bytes",
                     file.filename,
                     file.bytes_completed,
                     file.total_bytes
@@ -117,316 +49,270 @@ impl ProgressHandler for LogProgress {
     }
 }
 
-/// Ensures the parakeet model is provisioned at `model_dir`.
-///
-/// Skips the download when every required file is already present with its
-/// expected size, otherwise downloads each missing file from
-/// [`MODEL_REPOSITORY`] to a temporary file, verifies its byte count against
-/// the expected size, and moves it into place. Returns a specific [`Error`]
-/// (rather than a false "ready") when any file cannot be fetched or fails its
-/// size check.
-///
-/// `model_dir` is `~/.config/steno/models/parakeet`; it is a parameter so the
-/// pure logic can be exercised in tests without touching the real config
-/// directory.
-pub async fn ensure_provisioned(model_dir: &Path) -> Result<(), Error> {
-    std::fs::create_dir_all(model_dir)?;
-
-    let (owner, name) = MODEL_REPOSITORY
-        .split_once('/')
-        .expect("repository id is owner/name");
-    let client = hf_hub::HFClient::new()?;
-    let repo = client.model(owner, name);
-    for name in REQUIRED_FILES {
-        // `EXPECTED_SIZES` values are `Option<u64>`, so `find().map(...)` yields
-        // `Option<Option<u64>>`; the `.flatten()` collapses it to `Option<u64>`.
-        #[allow(clippy::map_flatten)]
-        let size = EXPECTED_SIZES
-            .iter()
-            .find(|(file_name, _)| *file_name == *name)
-            .map(|(_, size)| *size)
-            .flatten();
-        let file = ModelFile { name, size };
-        if file.is_ready(model_dir) {
-            log::info!("model: {} present, skipping", file.name);
-            continue;
-        }
-
-        log::info!("model: downloading {}", file.name);
-        let downloaded = download_file(&repo, &file, model_dir).await?;
-        log::info!(
-            "model: {} verified ({})",
-            file.name,
-            format_size(downloaded.size)
-        );
+pub async fn ensure_parakeet_model() -> Result<()> {
+    if !is_model_available()? {
+        download_model().await?;
     }
 
-    log::info!("model: provisioned at {}", model_dir.display());
     Ok(())
 }
 
-/// Downloads `file` from `repo` to `model_dir`, verifying its size.
-///
-/// The file is streamed to a temporary path beside its destination and moved
-/// into place only after the final byte has been written and its byte count
-/// matches the expected size, so a truncated or corrupt download is rejected
-/// and an interrupted download never leaves a partial file that a later
-/// startup mistakes for complete.
-async fn download_file(
-    repo: &hf_hub::HFRepository<hf_hub::RepoTypeModel>,
-    file: &ModelFile,
-    model_dir: &Path,
-) -> Result<Downloaded, Error> {
-    let dest = model_dir.join(file.name);
+/// Derive the user's config directory: `$XDG_CONFIG_HOME` when set,
+/// otherwise `$HOME/.config`. Fails when neither can be derived —
+/// provisioning must not fall back to a temporary, world-readable
+/// location.
+fn resolve_config_dir(xdg: Option<&std::ffi::OsStr>, home: Option<&std::ffi::OsStr>) -> Result<PathBuf> {
+    if let Some(xdg) = xdg.filter(|path| !path.is_empty()) {
+        return Ok(PathBuf::from(xdg));
+    }
 
-    // The expected size is a trusted constant, not the server-declared length,
-    // so the byte count is checked against a value the server cannot inflate.
-    let expected = file.size.ok_or_else(|| {
-        hf_hub::HFError::malformed_response_at("unknown file size", file.repo_path())
+    let home = home.filter(|path| !path.is_empty()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot derive the model directory: neither $XDG_CONFIG_HOME nor $HOME is set"
+        )
     })?;
 
-    let (_declared, stream) = download_streamed(repo, &file.repo_path()).await?;
-
-    let temp = temp_path(&dest);
-    let result = stream_to_file(stream, &temp).await;
-
-    match result {
-        Ok(got) => {
-            if got != expected {
-                let _ = std::fs::remove_file(&temp);
-                return Err(hf_hub::HFError::malformed_response_at(
-                    format!("size mismatch: got {got}, expected {expected}"),
-                    file.repo_path(),
-                ));
-            }
-            std::fs::rename(&temp, &dest)?;
-            Ok(Downloaded { path: dest, size: got })
-        }
-        Err(error) => {
-            let _ = std::fs::remove_file(&temp);
-            Err(error)
-        }
-    }
+    Ok(PathBuf::from(home).join(".config"))
 }
 
-/// Streams `filename` from `repo`, returning the declared size and the byte
-/// stream. Xet-backed large files are fetched transparently by the crate.
-async fn download_streamed(
-    repo: &hf_hub::HFRepository<hf_hub::RepoTypeModel>,
-    filename: &str,
-) -> Result<(Option<u64>, HFByteStream), Error> {
-    repo.download_file_stream()
-        .filename(filename.to_string())
-        .revision(MODEL_BRANCH.to_string())
+fn model_dir_from_base(config_dir: &Path) -> PathBuf {
+    config_dir.join("steno").join("models").join("parakeet")
+}
+
+pub fn parakeet_model_dir() -> Result<PathBuf> {
+    let config_dir = resolve_config_dir(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )?;
+
+    Ok(model_dir_from_base(&config_dir))
+}
+
+/// Staging directory for in-flight downloads, beside the model directory
+/// so that moving a verified file into place is an atomic same-filesystem
+/// rename.
+fn staging_dir() -> Result<PathBuf> {
+    let model_dir = parakeet_model_dir()?;
+    let models_dir = model_dir.parent().ok_or_else(|| {
+        anyhow::anyhow!("model directory {:?} has no parent for staging", model_dir)
+    })?;
+
+    Ok(models_dir.join(".parakeet-staging"))
+}
+
+fn basename(repo_path: &str) -> &str {
+    repo_path.rsplit('/').next().unwrap_or(repo_path)
+}
+
+/// A file counts as provisioned only when it exists and is non-empty.
+fn file_is_ready(file: &Path) -> bool {
+    std::fs::metadata(file).map(|metadata| metadata.len() > 0).unwrap_or(false)
+}
+
+/// The model is available only when every required file exists, flat in
+/// the model directory, and is non-empty.
+pub fn is_model_available() -> Result<bool> {
+    is_model_available_in(&parakeet_model_dir()?)
+}
+
+fn is_model_available_in(model_dir: &Path) -> Result<bool> {
+    for (repo_path, _) in REQUIRED_FILES {
+        if !file_is_ready(&model_dir.join(basename(repo_path))) {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+async fn download_model() -> Result<()> {
+    let model_dir = parakeet_model_dir()?;
+    let staging = staging_dir()?;
+
+    std::fs::create_dir_all(&model_dir)?;
+    std::fs::create_dir_all(&staging)?;
+
+    let client = HFClient::new()?;
+    let repo = client.model(REPO_OWNER, REPO_NAME);
+
+    // Clean up staging on every exit path, so a failed or interrupted run
+    // never leaves staged files behind that a later run could mistake for
+    // input.
+    let result = download_all(&repo, &staging, &model_dir).await;
+
+    let _ = std::fs::remove_dir_all(&staging);
+
+    if result.is_ok() {
+        tracing::info!("parakeet model ready at {:?}", model_dir);
+    }
+
+    result
+}
+
+async fn download_all(repo: &HFRepository<RepoTypeModel>, staging: &Path, model_dir: &Path) -> Result<()> {
+        for (repo_path, expected_size) in REQUIRED_FILES {
+            let dest = model_dir.join(basename(repo_path));
+            if file_is_ready(&dest) {
+                continue;
+        }
+
+        download_one(repo, repo_path, *expected_size, staging, &dest).await?;
+    }
+
+        Ok(())
+}
+
+async fn download_one(
+    repo: &HFRepository<RepoTypeModel>,
+    repo_path: &str,
+    expected_size: u64,
+    staging: &Path,
+    dest: &Path,
+) -> Result<()> {
+    // hf-hub writes to `staging.join(repo_path)`, i.e. staging/tdt/<basename>.
+    let staged = staging.join(repo_path);
+
+    tracing::info!("downloading {} ({} bytes)", repo_path, expected_size);
+
+    repo.download_file()
+        .filename(repo_path.to_string())
+        .local_dir(staging.to_path_buf())
         .progress(LogProgress)
         .send()
-        .await
+        .await?;
+
+    place_verified(&staged, dest, expected_size)
 }
 
-/// Writes `stream` to `path` and returns the total number of bytes written.
-///
-/// The byte count is compared against the expected size by [`download_file`],
-/// so a truncated or corrupt download is rejected rather than treated as
-/// complete.
-async fn stream_to_file(stream: HFByteStream, path: &Path) -> Result<u64, Error> {
-    let mut file = File::create(path)?;
-    let mut bytes = 0u64;
-    let mut stream = Box::pin(stream);
-    loop {
-        match stream.next().await {
-            Some(Ok(chunk)) => {
-                file.write_all(&chunk)?;
-                bytes += chunk.len() as u64;
-            }
-            Some(Err(error)) => return Err(error),
-            None => break,
-        }
+/// Verify the staged download's byte count and move it into place. On
+/// mismatch the staged file is deleted and the destination is left
+/// untouched, so the model directory never sees a rejected file.
+fn place_verified(staged: &Path, dest: &Path, expected_size: u64) -> Result<()> {
+    let staged_size = std::fs::metadata(staged)
+        .with_context(|| format!("staged file {:?} is missing after download", staged))?
+        .len();
+
+    if staged_size != expected_size {
+        let _ = std::fs::remove_file(staged);
+        anyhow::bail!(
+            "downloaded file has size {staged_size}, expected {expected_size}; rejecting it"
+        );
     }
-    file.flush()?;
-    Ok(bytes)
-}
 
-/// The temporary path used for a file being downloaded into `dest`, beside it.
-///
-/// The name carries a unique per-process suffix so two daemons downloading the
-/// same file do not race on one shared temporary file, and a stale temporary
-/// file left by an interrupted run is not silently truncated and overwritten.
-fn temp_path(dest: &Path) -> PathBuf {
-    let name = dest
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("model");
-    let unique = random_hex();
-    dest.with_file_name(format!("{name}.{}-{unique}.tmp", std::process::id()))
-}
+    std::fs::rename(staged, dest)
+        .with_context(|| format!("moving {:?} into place at {:?}", staged, dest))?;
 
-/// A short random hex token, distinct from the pid, for the temporary name.
-fn random_hex() -> String {
-    let mut bytes = [0u8; 8];
-    rand::rngs::OsRng.fill(&mut bytes);
-    let mut hex = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        hex.push_str(&format!("{byte:02x}"));
-    }
-    hex
-}
-
-/// A human-readable size, for log output.
-fn format_size(bytes: u64) -> String {
-    let (value, unit) = match bytes {
-        b if b >= (1 << 30) => (bytes as f64 / (1 << 30) as f64, "GiB"),
-        b if b >= (1 << 20) => (bytes as f64 / (1 << 20) as f64, "MiB"),
-        b if b >= (1 << 10) => (bytes as f64 / (1 << 10) as f64, "KiB"),
-        _ => (bytes as f64, "B"),
-    };
-    if value >= 100.0 || value.fract() == 0.0 {
-        format!("{value:.0} {unit}")
-    } else {
-        format!("{value:.1} {unit}")
-    }
-}
-/// The model directory, `~/.config/steno/models/parakeet`, derived from the
-/// user's config directory (honouring `$XDG_CONFIG_HOME`), not a hardcoded home.
-///
-/// Returns an error rather than falling back to a non-user-writable location
-/// when neither `$XDG_CONFIG_HOME` nor `$HOME` is set, so the daemon never
-/// downloads model files into an arbitrary directory such as filesystem root.
-pub fn model_dir() -> Result<PathBuf, Error> {
-    let config = config_dir()?;
-    Ok(config.join("steno").join("models").join("parakeet"))
-}
-
-/// The user config directory, `~/.config` (honouring `$XDG_CONFIG_HOME`).
-///
-/// Pure and testable: it reads the environment and returns an error when no
-/// user-writable config directory can be derived.
-fn config_dir() -> Result<PathBuf, Error> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| {
-                Path::new(&home).join(".config")
-            })
-        })
-        .ok_or_else(|| {
-            hf_hub::HFError::malformed_response_at(
-                "no XDG_CONFIG_HOME or HOME is set, cannot derive the model directory",
-                "config",
-            )
-        })
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::ffi::OsStr;
 
-    #[test]
-    fn required_files_are_the_five_model_files() {
-        assert_eq!(
-            REQUIRED_FILES,
-            &[
-                "config.json",
-                "tokenizer.model",
-                "encoder.onnx",
-                "decoder_joint.onnx",
-                "encoder.onnx.data"
-            ]
-        );
+    static DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn tmp_dir() -> PathBuf {
+        let n = DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("steno-model-test-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_file(path: &Path, size: u64) {
+        std::fs::write(path, vec![0u8; size as usize]).unwrap();
     }
 
     #[test]
-    fn expected_sizes_cover_the_required_files() {
-        for name in REQUIRED_FILES {
-            assert!(
-                EXPECTED_SIZES.iter().any(|(file_name, _)| file_name == name),
-                "missing expected size for {name}"
-            );
+    fn config_dir_prefers_xdg() {
+        let dir = resolve_config_dir(Some(OsStr::new("/xdg")), Some(OsStr::new("/home"))).unwrap();
+        assert_eq!(dir, PathBuf::from("/xdg"));
+    }
+
+    #[test]
+    fn config_dir_falls_back_to_home() {
+        let dir = resolve_config_dir(None, Some(OsStr::new("/home"))).unwrap();
+        assert_eq!(dir, PathBuf::from("/home/.config"));
+
+        let dir = resolve_config_dir(Some(OsStr::new("")), Some(OsStr::new("/home"))).unwrap();
+        assert_eq!(dir, PathBuf::from("/home/.config"));
+    }
+
+    #[test]
+    fn config_dir_errors_when_neither_is_set() {
+        assert!(resolve_config_dir(None, None).is_err());
+    }
+
+    #[test]
+    fn model_dir_is_flat_under_config() {
+        let dir = model_dir_from_base(Path::new("/home/u/.config"));
+        assert_eq!(dir, PathBuf::from("/home/u/.config/steno/models/parakeet"));
+    }
+
+    #[test]
+    fn availability_requires_all_files_present_and_nonempty() {
+        let dir = tmp_dir();
+        let model_dir = dir.join("parakeet");
+        std::fs::create_dir_all(&model_dir).unwrap();
+
+        for (repo_path, _) in REQUIRED_FILES {
+            write_file(&model_dir.join(basename(repo_path)), 1);
         }
-    }
-    #[test]
-    fn is_ready_requires_the_expected_size() {
-        let dir = temp_dir();
-        let file = ModelFile { name: "config.json", size: Some(4) };
-        // A missing file is not ready.
-        assert!(!file.is_ready(&dir));
+        assert!(is_model_available_in(&model_dir).unwrap());
 
-        // A wrong-size file (too small) is not ready.
-        std::fs::write(dir.join("config.json"), b"abc").unwrap();
-        assert!(!file.is_ready(&dir));
+        // Zero-byte file counts as absent.
+        write_file(&model_dir.join("vocab.txt"), 0);
+        assert!(!is_model_available_in(&model_dir).unwrap());
 
-        // A wrong-size file (too large) is not ready.
-        std::fs::write(dir.join("config.json"), b"abcde").unwrap();
-        assert!(!file.is_ready(&dir));
+        // Missing file counts as absent.
+        std::fs::remove_file(model_dir.join("encoder-model.onnx")).unwrap();
+        assert!(!is_model_available_in(&model_dir).unwrap());
 
-        // A file of the exact expected size is ready.
-        std::fs::write(dir.join("config.json"), b"abcd").unwrap();
-        assert!(file.is_ready(&dir));
-
-        // A file whose size is unknown can never be treated as ready.
-        let unknown = ModelFile { name: "config.json", size: None };
-        assert!(!unknown.is_ready(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn temp_path_sits_beside_the_destination_and_is_unique() {
-        let dest = std::path::Path::new("/home/user/.config/steno/models/parakeet/config.json");
+    fn place_verified_moves_file_with_matching_size() {
+        let dir = tmp_dir();
+        let staged = dir.join("staged.onnx");
+        let dest = dir.join("flat.onnx");
+        write_file(&staged, 1234);
 
-        let temp = temp_path(dest);
-        assert_eq!(temp.parent().unwrap(), dest.parent().unwrap());
-        assert_ne!(temp, dest);
-        // The name ends in `.tmp` and is distinct from the destination.
-        assert!(temp.file_name().unwrap().to_str().unwrap().ends_with(".tmp"));
-        // Two calls produce distinct names, so concurrent downloads do not
-        // share a single temporary file.
-        assert_ne!(temp_path(dest), temp_path(dest));
+        place_verified(&staged, &dest, 1234).unwrap();
+
+        assert!(!staged.exists());
+        assert_eq!(std::fs::metadata(&dest).unwrap().len(), 1234);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn format_size_reads_naturally() {
-        assert_eq!(format_size(0), "0 B");
-        assert_eq!(format_size(512), "512 B");
-        assert_eq!(format_size(1024), "1 KiB");
-        assert_eq!(format_size(4096), "4 KiB");
-        assert_eq!(format_size(1024 * 1024), "1 MiB");
-        assert_eq!(format_size(1536), "1.5 KiB");
+    fn place_verified_rejects_and_deletes_mismatched_size() {
+        let dir = tmp_dir();
+        let staged = dir.join("staged.onnx");
+        let dest = dir.join("flat.onnx");
+        write_file(&staged, 1);
+
+        let err = place_verified(&staged, &dest, 1234).unwrap_err();
+        assert!(err.to_string().contains("rejecting"));
+
+        // The staged file is gone and nothing was placed.
+        assert!(!staged.exists());
+        assert!(!dest.exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn config_dir_errors_without_home() {
-        // When neither XDG_CONFIG_HOME nor HOME is set, config_dir must fail
-        // rather than falling back to filesystem root.
-        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        let prev_home = std::env::var_os("HOME");
-        let result = unsafe {
-            std::env::remove_var("XDG_CONFIG_HOME");
-            std::env::remove_var("HOME");
-            config_dir()
-        };
-        if let Some(xdg) = prev_xdg {
-            unsafe {
-                std::env::set_var("XDG_CONFIG_HOME", xdg);
-            }
-        }
-        if let Some(home) = prev_home {
-            unsafe {
-                std::env::set_var("HOME", home);
-            }
-        }
-        assert!(result.is_err());
-    }
-    fn temp_dir() -> PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!("steno-model-{}", uuid()));
-        std::fs::create_dir_all(&path).unwrap();
-        path
-    }
+    fn place_verified_errors_when_staged_file_missing() {
+        let dir = tmp_dir();
+        let staged = dir.join("staged.onnx");
+        let dest = dir.join("flat.onnx");
 
-    fn uuid() -> String {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::process::id().hash(&mut hasher);
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos().hash(&mut hasher);
-        format!("{:x}", hasher.finish())
+        assert!(place_verified(&staged, &dest, 1).is_err());
+        assert!(!dest.exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -7,7 +7,7 @@ transcription model needs are present at `~/.config/steno/models/parakeet` — s
 flat, without subdirectories — downloading them from HuggingFace when they are absent,
 so the daemon can transcribe audio without any manual, one-time setup step.
 
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Model directory location
 
@@ -79,21 +79,3 @@ The daemon MUST verify each downloaded file against its pinned expected byte siz
 
 - **WHEN** a downloaded file matches its pinned expected size
 - **THEN** it is moved from the staging location to `<model dir>/<basename>`
-
-### Requirement: Provisioning occurs during startup
-
-The daemon MUST ensure the model is provisioned as part of its startup, before the transcription model is loaded for use.
-
-#### Scenario: Provisioning precedes transcription
-
-- **WHEN** the daemon starts and the model is not yet provisioned
-- **THEN** the model is downloaded before the transcription model is loaded
-
-### Requirement: Provisioning errors are reported
-
-When the daemon cannot provision the model — for example, the network is unreachable or a required file cannot be fetched — it MUST report the failure and MUST NOT proceed as if the model were ready.
-
-#### Scenario: Network unavailable
-
-- **WHEN** a required file cannot be downloaded because the network is unreachable
-- **THEN** the daemon reports a provisioning failure

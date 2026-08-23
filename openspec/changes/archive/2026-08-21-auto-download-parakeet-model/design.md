@@ -73,3 +73,33 @@ task, and makes integrity checking and resume/retry worthwhile.
   `config.json`/`tokenizer.model` guard against a wrong variant.
 - **hf_hub API/version changes.** A pinned crate version limits churn; if a newer
   API changes, the download function is the single place to adjust.
+## Post-archive update (2026-08-23)
+
+The required file set and layout were deliberately changed (owner-confirmed,
+2026-08-23): the five files listed in this document (`config.json`,
+`tokenizer.model`, `encoder.onnx`, `decoder_joint.onnx`, `encoder.onnx.data`)
+do not exist in the `altunenes/parakeet-rs` repository. The model the daemon
+provisions is now the ParakeetTDT set under the repository's `tdt/` directory,
+narrowed to exactly the four files `ParakeetTDT::from_pretrained` loads (the
+int8 variants are loader fallbacks shadowed by the full-precision names;
+`nemo128.onnx` is not referenced by the model):
+
+| Repository path | Local file (flat) | Size (bytes) |
+| --- | --- | --- |
+| `tdt/decoder_joint-model.onnx` | `decoder_joint-model.onnx` | 72,520,893 |
+| `tdt/encoder-model.onnx` | `encoder-model.onnx` | 41,770,866 |
+| `tdt/encoder-model.onnx.data` | `encoder-model.onnx.data` | 2,435,420,160 |
+| `tdt/vocab.txt` | `vocab.txt` | 93,939 |
+
+Sizes were pinned from the HuggingFace repository API (2026-08-23) and match
+the byte-exact files on the owner's machine. Local paths are **flat** in
+`~/.config/steno/models/parakeet/<basename>` — the layout the model reads —
+while the `tdt/` prefix stays in the download URL (hf-hub joins the repository
+filename into `local_dir`, so the daemon downloads into a staging directory
+beside the model directory, verifies the staged byte count against the pinned
+size, and atomically renames into place; a mismatched file is deleted and
+provisioning fails). Readiness is "exists and non-empty" for every required
+file. The `/tmp` fallback for an undeducible config dir was removed in favor
+of an error. The spec (`openspec/specs/model-provisioning`) records all of
+this; content-hash verification remains a follow-up hardening, as this
+document's "size + optional hash" decision anticipated.
