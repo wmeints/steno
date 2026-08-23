@@ -1,40 +1,128 @@
-mod capture_key;
-mod model;
+use anyhow::Result;
+use kbd::hotkey::Modifier;
+use kbd_global::{backend::Backend, manager::HotkeyManager};
+use std::time::Duration;
+use tokio::sync::mpsc::channel;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::time::interval;
+use tokio::{
+    signal::unix::{SignalKind, signal},
+    time::timeout,
+};
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize the logger so `log::info!` output (the capture press/release
-    // log lines) is actually emitted. `env_logger` defaults to the `error`
-    // filter, which drops every one of those lines, so default to `info` and
-    // let `RUST_LOG` override it when more or less detail is wanted.
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info"),
-    )
-    .init();
+#[derive(Debug)]
+enum Command {
+    Start,
+    Stop,
+}
 
-    // The capture key is Ctrl+Super+Space: the Ctrl and Super modifiers held
-    // with Space as the base key, since a `kbd` hotkey needs a non-modifier
-    // base key to bind to.
-    let capture_key = capture_key::capture_hotkey();
+async fn shutdown_signal() {
+    let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
 
-    // Provision the parakeet model before the hotkey is bound, so the model is
-    // ready before transcription can be attempted. A failure here is fatal: the
-    // daemon cannot transcribe without the model files.
-    //
-    // A single-threaded runtime suffices: provisioning is one-time, sequential
-    // HTTP, and the runtime is dropped before the synchronous hotkey loop, so a
-    // multi-threaded runtime would only add overhead for work it does not use.
-    let model_result = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .build()?
-        .block_on(model::ensure_provisioned(&model::model_dir()?));
-    if let Err(error) = model_result {
-        eprintln!("model: {error}");
-        std::process::exit(1);
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => tracing::info!("received SIGINT"),
+        _ = sigterm.recv() => tracing::info!("received SIGTERM")
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt().init();
+
+    let token = CancellationToken::new();
+    let tracker = TaskTracker::new();
+
+    // Create a command channel between the key listener and the recorder so we
+    // can start/stop the recording depending on the key state.
+    let (tx, rx) = channel::<Command>(32);
+
+    // Build the hotkey manager against the evdev driver and make sure to grab
+    // the device because wayland will have it grabbed and we can't listen if
+    // that's the case!
+    let hotkey_mgr = HotkeyManager::builder()
+        .backend(Backend::Evdev)
+        .grab()
+        .build()?;
+
+    // Spawn the key listener that will grab Ctrl+Super to trigger the recording of audio.
+    // It will poll every 15 milliseconds if the recording trigger is active or not.
+    tracker.spawn(key_listener(hotkey_mgr, tx, token.clone()));
+    tracker.spawn(recorder(rx, token.clone()));
+    tracker.close();
+
+    tracing::info!("daemon active");
+
+    shutdown_signal().await;
+    token.cancel();
+
+    let timed_out = timeout(Duration::from_secs(30), tracker.wait())
+        .await
+        .is_err();
+
+    if timed_out {
+        tracing::warn!("shutdown timed out, forcing exit");
     }
 
-    if let Err(error) = capture_key::run(capture_key) {
-        eprintln!("capture_key: {error}");
-        std::process::exit(1);
+    Ok(())
+}
+
+async fn key_listener(
+    hotkey_mgr: HotkeyManager,
+    tx: Sender<Command>,
+    token: CancellationToken,
+) -> Result<()> {
+    let mut ticker = interval(Duration::from_millis(15));
+    let mut is_activated = false;
+
+    loop {
+        let modifiers = hotkey_mgr.active_modifiers()?;
+
+        if modifiers.contains(Modifier::Ctrl) && modifiers.contains(Modifier::Super) {
+            // Activate the recording mode, and send the start command to the recorder.
+            // The recorder will start capturing audio.
+            if !is_activated {
+                is_activated = true;
+                tx.send(Command::Start).await?;
+            }
+        } else {
+            // Deactivate the recording mode, and send the stop command to the recorder.
+            // The recorder will handle the transcription after this.
+            if is_activated {
+                is_activated = false;
+                tx.send(Command::Stop).await?;
+            }
+        }
+
+        tokio::select! {
+            _ = token.cancelled() => break,
+            _ = ticker.tick() => {}
+        }
     }
+
+    Ok(())
+}
+
+async fn recorder(mut rx: Receiver<Command>, token: CancellationToken) -> Result<()> {
+    let mut is_recording = false;
+
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => break,
+            Some(msg) = rx.recv() => {
+                if let Command::Start = msg {
+                    is_recording = true;
+                    tracing::info!("Start recording");
+                }
+
+                if let Command::Stop = msg && is_recording {
+                    is_recording = false;
+                    tracing::info!("Stop recording");
+                }
+            },
+        }
+    }
+
     Ok(())
 }
