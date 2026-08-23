@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Steno — Spec vs. Implementation Review</title>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --panel: #ffffff;
+    --ink: #1f2328;
+    --muted: #57606a;
+    --line: #d8dee4;
+    --ok: #1a7f37;
+    --ok-bg: #dafbe1;
+    --part: #9a6700;
+    --part-bg: #fff8c5;
+    --fail: #cf222e;
+    --fail-bg: #ffebe9;
+    --stale: #57606a;
+    --stale-bg: #eaeef2;
+    --accent: #0969da;
+    --code-bg: #eff1f3;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.55;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px 80px; }
+  header { border-bottom: 3px solid var(--ink); margin-bottom: 24px; padding-bottom: 16px; }
+  h1 { margin: 0 0 6px; font-size: 28px; }
+  h2 { font-size: 21px; margin: 40px 0 12px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  h3 { font-size: 16px; margin: 24px 0 8px; }
+  .meta { color: var(--muted); font-size: 14px; }
+  .meta code { font-size: 13px; }
+  .verdict {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 6px solid var(--part);
+    border-radius: 6px;
+    padding: 16px 20px;
+    margin: 20px 0;
+    font-size: 15px;
+  }
+  .verdict strong { color: var(--part); }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 16px 20px;
+    margin: 16px 0;
+  }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; background: var(--panel); }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f0f2f4; font-weight: 600; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  pre {
+    background: #22262b;
+    color: #e6edf3;
+    padding: 12px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+  .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .b-ok    { background: var(--ok-bg);    color: var(--ok); }
+  .b-part  { background: var(--part-bg);  color: var(--part); }
+  .b-fail  { background: var(--fail-bg);  color: var(--fail); }
+  .b-vac   { background: #eaeef2; color: var(--muted); }
+  .b-stale { background: var(--stale-bg); color: var(--stale); }
+  ul { margin: 8px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+  .evidence { color: var(--muted); font-size: 13px; }
+  .prio { font-weight: 700; }
+  .p0 { color: var(--fail); }
+  .p1 { color: var(--part); }
+  .p2 { color: var(--accent); }
+  .note {
+    background: #ddf4ff;
+    border: 1px solid #54aeff66;
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 14px;
+    margin: 12px 0;
+  }
+  .intent {
+    background: #dafbe1;
+    border: 1px solid #1a7f3766;
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 14px;
+    margin: 12px 0;
+  }
+  footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+  .toc { font-size: 14px; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Steno — Specification vs. Implementation Review</h1>
+  <div class="meta">
+    Date: 2026-08-23 &nbsp;·&nbsp;
+    Specs: <code>openspec/specs/model-provisioning/spec.md</code>, <code>openspec/specs/capture-key-interception/spec.md</code> &nbsp;·&nbsp;
+    Code: <code>crates/steno-daemon</code>, <code>crates/steno-cosmic</code> &nbsp;·&nbsp;
+    HEAD: <code>8313ca4</code> &nbsp;·&nbsp;
+    Design intent: capture key <strong>Ctrl+Super</strong> and the <strong>flat tdt model layout</strong> are deliberate decisions (owner-confirmed 2026-08-23) — the specs predate them and are stale.
+  </div>
+</header>
+
+<div class="verdict">
+  <strong>Verdict: the specs describe a design that no longer exists — on purpose.</strong>
+  The two largest spec/implementation deltas are <em>intentional</em>: the capture key is now
+  <code>Ctrl</code>+<code>Super</code> (no <code>Space</code>) because the spec's
+  <code>Ctrl+Super+Space</code> approach did not work in practice, and the model file set is the
+  7-file <code>tdt/</code> set from <code>altunenes/parakeet-rs</code> — verified to be exactly what
+  the HuggingFace repo contains and what the ParakeetTDT model loads (4 of the 7 files are on disk
+  with byte-exact repo sizes, flat in <code>~/.config/steno/models/parakeet</code>, owner-confirmed
+  working). The specs, not the code, need updating.
+  Two genuine bugs remain in the current tree: (1) <code>listen()</code> panics on the first idle
+  tick (<code>listener.rs:44</code>, proven — §3.3), which a successful end-to-end capture test on
+  <em>this exact tree</em> rules out, so it most likely entered with the final edit; and (2) the
+  model-provisioning layout is inconsistent — <code>is_model_available()</code> probes
+  <code>models/tdt/…</code> (owner-confirmed invalid) and hf-hub writes to
+  <code>parakeet/tdt/…</code>, while the layout the model consumes is flat <code>parakeet/…</code> —
+  so every startup re-enters the download branch, and a fresh machine would provision a layout the
+  model does not read.
+</div>
+
+<p class="toc">
+  <strong>Contents:</strong>
+  <a href="#state">1. Verified repository state</a> ·
+  <a href="#matrix">2. Compliance matrix</a> ·
+  <a href="#missing">3. Important missing elements</a> ·
+  <a href="#regression">4. Change history (git)</a> ·
+  <a href="#inconsistencies">5. Spec/design inconsistencies to resolve</a> ·
+  <a href="#improvements">6. Improvement backlog</a> ·
+  <a href="#appendix">7. Verification appendix</a>
+</p>
+
+<h2 id="state">1. Verified repository state</h2>
+<div class="card">
+  <table>
+    <tr><th>Command / check</th><th>Result</th></tr>
+    <tr><td><code>cargo build</code> (workspace)</td><td>PASS</td></tr>
+    <tr><td><code>cargo test</code></td><td>5 unit tests pass (2 <code>recorder</code>, 3 <code>listener</code>); 1 integration test <code>#[ignore]</code>d (downloads ~2.6&nbsp;GB); <code>model.rs</code> has <strong>zero tests</strong></td></tr>
+    <tr><td><code>cargo clippy --all-targets</code></td><td><strong>3 warnings</strong>: <code>unnecessary_to_owned</code> (<code>model.rs:62</code>), 2× <code>bool_assert_comparison</code> (<code>recorder.rs:62</code>, <code>recorder.rs:73</code>)</td></tr>
+    <tr><td>Listener idle-tick smoke run (throwaway test, removed after the run)</td><td><strong>PANIC on first tick</strong>: <code>listener.rs:44</code> — <code>called `Option::unwrap()` on a `None` value</code>; task dies in ~0.4&nbsp;s with no keys held (§3.3, §7)</td></tr>
+    <tr><td>Disk: <code>~/.config/steno/models/parakeet/</code></td><td>4 of 7 <code>REQUIRED_FILES</code> present, <strong>flat (no <code>tdt/</code> subdir)</strong>: <code>decoder_joint-model.onnx</code> (72,520,893&nbsp;B), <code>encoder-model.onnx</code> (41,770,866&nbsp;B), <code>encoder-model.onnx.data</code> (2,435,420,160&nbsp;B), <code>vocab.txt</code> (93,939&nbsp;B) — sizes byte-exact vs. the repo's <code>tdt/</code> copies. Missing: <code>decoder_joint-model.int8.onnx</code> (18&nbsp;MB), <code>encoder-model.int8.onnx</code> (652&nbsp;MB), <code>nemo128.onnx</code> (139&nbsp;KB). Owner-confirmed: this flat layout is what the ParakeetTDT model loads, and it works.</td></tr>
+    <tr><td>HuggingFace repo <code>altunenes/parakeet-rs</code> (API, 2026-08-23)</td><td>All 7 <code>REQUIRED_FILES</code> exist under <code>tdt/</code> — and <em>only</em> there (the repo root holds no model files). The 5 files named in the spec (<code>config.json</code>, <code>decoder_joint.onnx</code>, …) do not exist in the repo. So the code's file set matches the repo; the spec's does not.</td></tr>
+    <tr><td>hf-hub 1.0.0 source (local-dir download path)</td><td>Destination is <code>local_dir.join(filename)</code> (<code>repository/download.rs:323</code>, <code>xet.rs:581</code>) — the <code>tdt/</code> prefix in <code>REQUIRED_FILES</code> therefore lands locally as <code>parakeet/tdt/…</code>, and the xet path performs <strong>no local-existence check</strong> (no skip of already-present files).</td></tr>
+    <tr><td>Dependency usage scan</td><td><code>log</code>, <code>env_logger</code>, <code>rand</code>, <code>futures</code> are declared in <code>steno-daemon/Cargo.toml</code> but <strong>unused</strong> in current code</td></tr>
+  </table>
+</div>
+
+<h2 id="matrix">2. Compliance matrix</h2>
+<p>Legend: <span class="badge b-ok">MET</span> <span class="badge b-part">PARTIAL</span> <span class="badge b-fail">VIOLATED</span> <span class="badge b-stale">SPEC STALE (intentional)</span> <span class="badge b-vac">VACUOUS</span></p>
+
+<h3>2.1 <code>model-provisioning</code> — implementation: <code>crates/steno-daemon/src/model.rs</code></h3>
+<table>
+  <tr><th style="width:22%">Requirement (spec)</th><th style="width:11%">Status</th><th>Findings</th></tr>
+
+  <tr>
+    <td><strong>Model directory location</strong> — files in <code>~/.config/steno/models/parakeet</code>; fixed, not changeable by config or environment</td>
+    <td><span class="badge b-fail">VIOLATED</span></td>
+    <td>
+      <ul>
+        <li>Directory is derived from <code>$XDG_CONFIG_HOME</code> → <code>$HOME</code> → <strong><code>/tmp</code> fallback</strong> (<code>model.rs:48-55</code>, fallback at line 50). A <code>/tmp</code> model dir is world-readable and contradicts both the spec's "fixed, user-writable location" wording and the architecture quality goal that model/audio data be accessible only to the logged-in user. The spec wording vs. XDG derivation is a deliberate conflict to resolve (§5.1); the <code>/tmp</code> fallback should become a hard error either way.</li>
+        <li>On-disk layout is <strong>flat</strong> in <code>parakeet/</code> (verified, §1) — the layout the ParakeetTDT model consumes (owner-confirmed). But the current code's download destination is <code>parakeet/tdt/…</code> (hf-hub joins <code>filename</code> into <code>local_dir</code>) — a mismatch that matters on fresh machines (§2.1, "Missing files" row).</li>
+      </ul>
+    </td>
+  </tr>
+
+  <tr>
+    <td><strong>Missing files trigger a download</strong> — absent files are downloaded from <code>altunenes/parakeet-rs</code> into the model dir; present files are not re-downloaded</td>
+    <td><span class="badge b-fail">VIOLATED</span></td>
+    <td>
+      <ul>
+        <li><strong>The availability check is invalid</strong> (owner-confirmed: "it needs to strip the tdt/ path"). <code>is_model_available</code> computes the probe path with <code>local_dir.with_file_name(file)</code> (<code>model.rs:62</code>). Because <code>file</code> carries a <code>tdt/</code> prefix, <code>with_file_name</code> replaces the final <code>parakeet</code> segment and probes <code>~/.config/steno/models/tdt/&lt;name&gt;</code> — which matches <em>neither</em> the flat on-disk layout <em>nor</em> the code's own download destination <code>parakeet/tdt/&lt;name&gt;</code>. The check can therefore never return true; every startup enters the download branch.</li>
+        <li>Because hf-hub's local-dir path has no existence check (verified in its source, §1), a fresh machine downloads the full set <em>every startup</em> until the check is fixed — ~3.3&nbsp;GB including the two int8 variants.</li>
+        <li>Layout coupling: the <code>tdt/</code> prefix is <strong>required in the download URL</strong> (the repo stores the files under <code>tdt/</code> — verified) but must be <strong>stripped from the local path</strong> (both the probe and the write destination) so files land flat in <code>parakeet/&lt;basename&gt;</code>, where the model reads them. hf-hub couples URL and local name in the single <code>filename</code> argument, so the code must handle the split (e.g. download to <code>parakeet/tdt/</code> and move to flat, or download per-file to a basename destination).</li>
+        <li>Presence check is <code>exists()</code> only — no non-empty/size component, so a zero-byte file counts as provisioned (M4).</li>
+      </ul>
+    </td>
+  </tr>
+
+  <tr>
+    <td><strong>Correct files are fetched</strong> — exactly <code>config.json</code>, <code>decoder_joint.onnx</code>, <code>encoder.onnx</code>, <code>encoder.onnx.data</code>, <code>tokenizer.model</code>; nothing else</td>
+    <td><span class="badge b-stale">SPEC STALE (intentional)</span></td>
+    <td>
+      <p>The code's 7-file <code>tdt/</code> set (<code>model.rs:9-16</code>) is the <strong>correct set</strong>: the repo's <code>tdt/</code> directory contains exactly these 7 files (verified via the HF API), the 4 files on disk match their repo sizes byte-for-byte, and the owner confirms this is what the ParakeetTDT model loads. The spec's 5-file list names files that <em>do not exist anywhere in the repo</em> — the spec describes the old, non-working design.</p>
+      <p><strong>Open question:</strong> 3 of the 7 files are absent from disk (<code>decoder_joint-model.int8.onnx</code> 18&nbsp;MB, <code>encoder-model.int8.onnx</code> 652&nbsp;MB, <code>nemo128.onnx</code> 139&nbsp;KB), while the 4 non-int8 files constitute the confirmed-working set. If ParakeetTDT only needs those 4, drop the rest from <code>REQUIRED_FILES</code> — that removes ~670&nbsp;MB of startup download. <em>Confirm before changing.</em></p>
+    </td>
+  </tr>
+
+  <tr>
+    <td><strong>Integrity is verified</strong> — corrupt/truncated/tampered downloads rejected; a failed model must not be reported ready</td>
+    <td><span class="badge b-fail">VIOLATED</span></td>
+    <td>
+      <ul>
+        <li>No size check, no content hash, no temp-file-then-rename. Files are written directly to their destination by hf-hub's <code>send()</code> (<code>model.rs:70-92</code>).</li>
+        <li>An interrupted download leaves a partial file that a later startup accepts (the availability check has no size/non-empty component — and currently never passes anyway).</li>
+        <li>Expected sizes are now trivially pinable: the HF API reports exact byte counts for all 7 files (table in §7), so <code>EXPECTED_SIZES</code> constants + post-download byte-count verification is a small, well-specified fix.</li>
+      </ul>
+    </td>
+  </tr>
+
+  <tr>
+    <td><strong>Provisioning occurs during startup</strong> — before the transcription model is loaded</td>
+    <td><span class="badge b-vac">VACUOUS</span></td>
+    <td>
+      Ordering is correct (<code>main.rs:37</code>, before the listener is spawned), but <code>parakeet_rs</code> is not a daemon dependency and the daemon itself loads no model — transcription currently happens outside the daemon (the owner runs the ParakeetTDT model against the provisioned directory). The "provisioning precedes transcription" scenario holds only because the daemon's transcription step does not exist yet.
+    </td>
+  </tr>
+
+  <tr>
+    <td><strong>Provisioning errors are reported</strong> — failure reported, no false "ready"</td>
+    <td><span class="badge b-part">PARTIAL</span></td>
+    <td>
+      Transport errors propagate via <code>?</code> in <code>main.rs:37</code> and exit non-zero. But because integrity failures are never detected (see above), a corrupt or truncated download is reported as success — the spec's core scenario ("download is corrupted ⇒ not ready") is unmet.
+    </td>
+  </tr>
+</table>
+
+<h3>2.2 <code>capture-key-interception</code> — implementation: <code>crates/steno-daemon/src/listener.rs</code></h3>
+<table>
+  <tr><th style="width:22%">Requirement (spec)</th><th style="width:11%">Status</th><th>Findings</th></tr>
+
+  <tr>
+    <td><strong>Capture key definition</strong> — <code>Ctrl</code>+<code>Super</code>+<code>Space</code> pressed simultaneously; <code>Space</code> is the base key; modifiers-only must NOT be active</td>
+    <td><span class="badge b-stale">SPEC STALE (intentional)</span></td>
+    <td>
+      <ul>
+        <li><strong>Deliberate design change (owner-confirmed):</strong> the capture key is now <code>Ctrl</code>+<code>Super</code> with no base key. The spec's <code>Ctrl+Super+Space</code> approach (registered hotkey + <code>is_key_pressed(SPACE)</code> check, as in the deleted <code>capture_key.rs</code>) was tried and "couldn't get it work" on the target desktop; the current polling implementation was written this morning and tested successfully by the owner. <code>main.rs:39-40</code> documents the intent in-code ("grab Ctrl+Super to trigger the recording").</li>
+        <li>The spec's "Only modifiers held (no base key) ⇒ NOT active" scenario is deliberately voided: with no base key, <em>both modifiers held</em> <em>is</em> the active state, and a single modifier alone is not active — which the current <code>handle_modifiers</code> predicate (<code>listener.rs:57</code>) implements correctly for the new design.</li>
+        <li>Action: update the spec and the archived design doc to <code>Ctrl+Super</code>; do not "restore" the Space check.</li>
+      </ul>
+    </td>
+  </tr>
+
+  <tr>
+    <td><strong>Capture key press detection</strong> — inactive→active transition; including press while modifiers were already held</td>
+    <td><span class="badge b-fail">VIOLATED</span></td>
+    <td>
+      <p><strong>Dead-on-arrival bug in the current tree:</strong> the poll loop panics on the first <em>idle</em> tick. <code>handle_modifiers</code> returns <code>Option::None</code> whenever no transition occurred — the normal case on every tick where a capture transition is not in flight — and the loop does <code>.map(…).unwrap().await?</code> (<code>listener.rs:39-44</code>). <code>None.map(f).unwrap()</code> panics, so the task dies on its very first tick (no keys are held at startup). Empirically verified: a spawned <code>listen()</code> panics at <code>listener.rs:44</code> within ~0.4&nbsp;s (<code>called `Option::unwrap()` on a `None` value</code>). While this line exists, the capture key cannot produce any events and no successful end-to-end capture test of <em>this exact tree</em> is possible — so the owner's successful test almost certainly ran on an earlier iteration of this morning's work (<code>listener.rs</code> was edited minutes before this review). The fix is one line: send/await only when <code>Some</code>; an idle tick is a no-op. <strong>Re-verify the Ctrl+Super flow end-to-end after the fix.</strong></p>
+      <p>Beyond the panic: for the <em>new</em> <code>Ctrl+Super</code> definition, the <code>is_active</code> transition logic in the 15&nbsp;ms poll loop (<code>listener.rs:34-53</code>) is actually correct — it handles press while modifiers were already held, and the event-loop design is a reasonable realization of the design doc's poll approach. The panic is the blocker, not the state machine.</p>
+    </td>
+  </tr>
+
+  <tr>
+    <td><strong>Capture key release detection</strong> — release as soon as <em>any</em> of the capture keys is dropped</td>
+    <td><span class="badge b-part">PARTIAL</span></td>
+    <td>
+      <ul>
+        <li>Under the intentional <code>Ctrl+Super</code> definition, release means dropping <em>either</em> modifier — and <code>handle_modifiers</code> does exactly that (both held &amp;&amp; <code>is_active</code> → <code>Stop</code>; either dropped → <code>Stop</code>). The old concern ("releasing <code>Space</code> alone leaves capture stuck active") is void: <code>Space</code> is no longer part of the key.</li>
+        <li>Blocked in practice by the idle-tick panic above — no transition is ever observed until <code>listener.rs:44</code> is fixed.</li>
+      </ul>
+    </td>
+  </tr>
+
+  <tr>
+    <td><strong>Capture key event logging</strong> — distinct press and release log entries, per cycle, in order, so an operator can verify interception</td>
+    <td><span class="badge b-part">PARTIAL</span></td>
+    <td>
+      <ul>
+        <li>The capture-key layer logs nothing on press/release. The operator-visible signal is one layer down: <code>Start recording</code> / <code>Stop recording</code> from the <code>Recorder</code> (<code>recorder.rs:41</code>, <code>recorder.rs:46</code>) — these fire on exactly the same transitions and are what an operator (and the owner, in the successful test) actually observes.</li>
+        <li>If the recorder-level lines satisfy the spec's intent ("operator can verify interception"), the spec wording should be amended; otherwise add <code>capture_key: pressed</code> / <code>capture_key: released</code> entries in <code>handle_modifiers</code>. No test currently asserts any logging behavior.</li>
+      </ul>
+    </td>
+  </tr>
+</table>
+
+<h2 id="missing">3. Important missing elements</h2>
+
+<h3>3.1 The specs need to catch up to the (intentional) implementation</h3>
+<div class="card">
+  <table>
+    <tr><th style="width:8%">#</th><th style="width:24%">Gap</th><th>What to do</th></tr>
+    <tr><td>S1</td><td>Spec: capture key definition is stale</td>
+        <td>Update <code>capture-key-interception</code> to <code>Ctrl</code>+<code>Super</code>: no base key, no <code>Space</code>; "active" = both modifiers held; release = either modifier dropped. Delete the base-key scenarios ("Only modifiers held ⇒ NOT active" no longer applies; add the correct one: a single modifier alone ⇒ not active). Record <em>why</em> the change was made (the <code>Ctrl+Super+Space</code> hotkey approach did not work on the target desktop) so the next reader doesn't "fix" it back. Update the archived design doc to match, including the grab-mode outcome (§5.4).</td></tr>
+    <tr><td>S2</td><td>Spec: model file list is stale</td>
+        <td>Update <code>model-provisioning</code> to the 7-file <code>tdt/</code> set in <code>altunenes/parakeet-rs</code> (repo-verified), flat local layout in <code>~/.config/steno/models/parakeet/&lt;basename&gt;</code> (owner-confirmed working with ParakeetTDT). The spec's current 5-file list does not exist in the repo. Decide whether the 3 int8/<code>nemo128</code> files are needed — the on-disk working set is the 4 non-int8 files; if so, shrink <code>REQUIRED_FILES</code> too (−~670&nbsp;MB).</td></tr>
+    <tr><td>S3</td><td>Spec: "fixed location" wording vs. XDG</td>
+        <td>Keep XDG derivation (platform convention, design's explicit choice) and amend the spec wording; drop the <code>/tmp</code> fallback in code (hard error instead). §5.1.</td></tr>
+  </table>
+</div>
+
+<h3>3.2 Genuine bugs in the current code (independent of the spec updates)</h3>
+<div class="card">
+  <table>
+    <tr><th style="width:8%">#</th><th style="width:24%">Gap</th><th>What is missing / broken</th></tr>
+    <tr><td>B1</td><td>Idle-tick panic in <code>listen()</code></td>
+        <td><code>.map(…).unwrap().await?</code> on <code>Option&lt;RecorderCommand&gt;</code> panics on <code>None</code> — every no-transition tick, starting with tick one. Proven: spawned task dies at <code>listener.rs:44</code> in ~0.4&nbsp;s (§7). The whole capture path is dead while this exists. One-line structural fix (send/await only on <code>Some</code>), then re-verify the Ctrl+Super flow. <span class="evidence">listener.rs:39-44.</span></td></tr>
+    <tr><td>B2</td><td>Provisioning layout inconsistency</td>
+        <td>Three places disagree: the check probes <code>models/tdt/&lt;name&gt;</code> (<code>with_file_name</code> bug, owner-confirmed), hf-hub writes to <code>parakeet/tdt/&lt;name&gt;</code>, the model reads flat <code>parakeet/&lt;name&gt;</code>. Net effects: the check never passes (download branch on every startup; ~3.3&nbsp;GB of re-fetches on a fresh machine since hf-hub has no local-existence check), and a fresh machine ends up with a layout the model does not use. Fix: keep <code>tdt/</code> in the URL, strip it from the local probe <em>and</em> the local write destination. <span class="evidence">model.rs:58-67, model.rs:70-92; hf-hub <code>download.rs:323</code>/<code>xet.rs:581</code>.</span></td></tr>
+    <tr><td>B3</td><td>Integrity verification</td>
+        <td>No expected-size constants, no content hash, no temp-then-rename, no rejection path. A truncated or corrupted 2.4&nbsp;GB download is silently accepted. Sizes are known for all 7 files (repo API, §7) — pin them and verify byte counts after download. <span class="evidence">model.rs:70-92.</span></td></tr>
+    <tr><td>B4</td><td>Non-empty readiness check</td>
+        <td>Readiness is <code>exists()</code> only; a zero-byte file counts as provisioned. <span class="evidence">model.rs:58-67.</span></td></tr>
+    <tr><td>B5</td><td>Provisioning tests</td>
+        <td><code>model.rs</code> has zero unit tests. The only test that touches provisioning is a <code>#[ignore]</code>d 30-minute, 2.6&nbsp;GB download test that deletes the real model directory.</td></tr>
+  </table>
+</div>
+
+<h3>3.3 Against the architecture (beyond the two specs, the next layer of "important missing")</h3>
+<div class="card">
+  <ul>
+    <li><strong>Audio capture:</strong> no PipeWire integration exists. <code>Recorder</code> is a boolean flag — it records nothing. (Explicitly out of scope for the two archived specs, but it is the reason the <code>Start</code>/<code>Stop</code> commands go nowhere.)</li>
+    <li><strong>Transcription:</strong> <code>parakeet_rs</code> is not a dependency; the daemon loads no model. The ParakeetTDT model is currently exercised externally against the provisioned directory. The daemon's "provisioning before the model is loaded" is nominal until <code>parakeet_rs</code> lands here.</li>
+    <li><strong>Text injection:</strong> no <code>/dev/uinput</code> integration.</li>
+    <li><strong>Notifications:</strong> no D-Bus broadcast; <code>steno-cosmic</code> is a <code>Hello, world!</code> stub.</li>
+    <li><strong>Docs:</strong> README "Getting started" is a TODO; architecture docs 06–11 are near-empty placeholders.</li>
+  </ul>
+</div>
+
+<h3>3.4 Robustness gaps in the current daemon wiring</h3>
+<div class="card">
+  <ul>
+    <li><strong class="prio p0">[P0] Dead-on-arrival panic in <code>listen()</code> (B1).</strong> See §3.2. Note the tension: the owner reports a successful capture test this morning — impossible against this exact tree (the task is dead before any key is pressed), so the panic almost certainly entered with the final edit. Fix, then re-test.</li>
+    <li><strong>Failed listener is invisible.</strong> <code>tracker.spawn(listener.listen(…))</code> (<code>main.rs:41</code>) drops the task's <code>Result</code> — and tokio converts the panic above into a <code>JoinError</code> that is likewise dropped. Nothing is logged; the daemon proceeds to wait for a shutdown signal while its only capture path is dead. The same silent-death path applies if <code>active_modifiers()</code> starts erroring later (device hotplug, permissions). There is no supervision, no error surfacing, no non-zero exit.</li>
+    <li><strong>Grab mode — reconcile, don't assume.</strong> The manager is built with <code>.grab()</code> (<code>listener.rs:20</code>). The archived design doc says the final form must <em>not</em> grab because an earlier grab form "exclusively captured every input node, which broke the user's session." But the current <code>.grab()</code> build was tested successfully on the desktop this morning — kbd-global's grab may behave differently from what broke the session. Decide explicitly and make doc and code agree.</li>
+    <li><strong>OS-coupled unit tests.</strong> The three <code>listener</code> tests construct a real <code>HotkeyManager</code> (evdev backend, grab mode) via <code>KeyListener::new()</code>. The design doc's decision to isolate the key source behind a trait (a <code>KeyEventSource</code>) was never realized — the state machine is only testable on a machine with evdev access, which makes CI environment-dependent.</li>
+    <li><strong><code>expect()</code> in <code>main.rs:14</code></strong> (<code>install SIGTERM handler</code>) panics instead of returning an error.</li>
+  </ul>
+</div>
+
+<h2 id="regression">4. Change history (git)</h2>
+<p>The git story, reframed with the owner's account: the original implementation was spec-conformant but <strong>did not work</strong> on the target desktop ("couldn't get it work"). It was deliberately replaced this morning with the <code>Ctrl+Super</code> polling design and the <code>tdt/</code> file set — an intentional redesign, not drift. The specs still describe the old, non-working design. The remaining issues are the bugs in §3.2, not the redesign itself:</p>
+<div class="card">
+  <table>
+    <tr><th>Commit</th><th>Message</th><th>Effect</th></tr>
+    <tr><td><code>5914b88</code> / <code>ff3c465</code></td><td>Original features (capture key, model provisioning)</td>
+        <td>Spec-conformant implementation: registered <code>Ctrl+Super+Space</code> hotkey with base-key check, <code>capture_key: pressed/released</code> logging; model module with <code>EXPECTED_SIZES</code>, byte-count verification, temp-then-rename, size-based readiness, error (never <code>/tmp</code>) when no config dir could be derived. <strong>Did not work in practice</strong> (owner-confirmed) — which is why it was replaced.</td></tr>
+    <tr><td><code>b216abb</code></td><td>refactor: move code to tokio runtime base</td>
+        <td>Deleted <code>capture_key.rs</code> (111 lines) and reduced <code>model.rs</code> to a stub — removed the old (non-working) logic.</td></tr>
+    <tr><td><code>2a82c3e</code></td><td>refactor: improve testability</td>
+        <td>Introduced the current polling capture design as <code>listener.rs</code> (<code>Ctrl &amp;&amp; Super</code> predicate) and <code>recorder.rs</code>.</td></tr>
+    <tr><td><code>8313ca4</code></td><td>refactor: improve model download functionality</td>
+        <td>Reintroduced <code>model.rs</code> with the 7-file <code>tdt/</code> set (matches the repo layout — verified) and <code>exists()</code>-only readiness; introduced the <code>with_file_name</code> probe bug (owner-confirmed) and the <code>/tmp</code> fallback.</td></tr>
+  </table>
+  <div class="intent">
+    The old code is recoverable verbatim (<code>git show b216abb~1:crates/steno-daemon/src/model.rs</code>,
+    <code>git show b216abb~1:crates/steno-daemon/src/capture_key.rs</code>) — but per the owner it did not work,
+    so <strong>restoration is not the goal</strong>. The goal is: update the specs to the working design (S1–S3),
+    and fix the genuine bugs (B1–B5). Two ideas from the old implementation are worth re-adopting independently of the
+    redesign: integrity verification (sizes + temp-then-rename) and the error-instead-of-<code>/tmp</code> fallback.
+  </div>
+</div>
+
+<h2 id="inconsistencies">5. Spec/design inconsistencies to resolve</h2>
+<p>Before (or while) fixing the code, these contradictions should be settled deliberately — otherwise a fix will violate one document or the other:</p>
+<div class="card">
+  <ol>
+    <li><strong>Fixed path vs. <code>$XDG_CONFIG_HOME</code>.</strong> The spec says the model dir "MUST NOT be changed by configuration or environment"; the archived design decision says to derive it from the user's config dir honouring <code>$XDG_CONFIG_HOME</code>. Both the old and new code honour the env var. <em>Recommendation:</em> keep XDG derivation (platform convention, design's explicit choice), amend the spec wording, and remove the <code>/tmp</code> fallback (fail instead).</li>
+    <li><strong>Which files, where in the repo — now resolved by evidence.</strong> Repo-verified: the 7 <code>tdt/</code> files exist under <code>tdt/</code>; the spec's 5 files exist nowhere in the repo. Disk-verified: the 4 non-int8 files sit flat in <code>parakeet/</code> with byte-exact repo sizes and work with ParakeetTDT (owner-confirmed). <em>Action:</em> the spec adopts the <code>tdt/</code> set with a flat local layout; then decide whether the 3 int8/<code>nemo128</code> files are needed (S2). Note for the spec: the <code>tdt/</code> prefix belongs in the download URL only — local paths are flat — because hf-hub joins <code>filename</code> into <code>local_dir</code> (B2).</li>
+    <li><strong>"Known, expected content" vs. size.</strong> The spec says verify against "known, expected content"; the design decision was "size + optional hash" and the deleted code implemented size only. Size catches truncation but not content tampering. <em>Recommendation:</em> implement size now (all 7 sizes are known from the repo API — §7), add SHA-256 constants as a follow-up, and note the strength in the spec.</li>
+    <li><strong>Grab mode.</strong> Design doc says the final form must not grab (an earlier grab form broke the session); current code calls <code>.grab()</code> and was tested successfully on the desktop this morning. Decide explicitly which story is true — if kbd-global's grab is safe, update the design doc; if not, remove <code>.grab()</code>. Don't leave doc and code silently disagreeing.</li>
+  </ol>
+</div>
+
+<h2 id="improvements">6. Improvement backlog</h2>
+
+<h3>P0 — make the current design actually work</h3>
+<div class="card">
+  <table>
+    <tr><th style="width:8%">#</th><th>Action</th><th style="width:34%">Why / how</th></tr>
+    <tr><td class="prio p0">1</td>
+        <td>Fix the idle-tick panic in <code>listen()</code>: send/await only on <code>Some(cmd)</code>; idle ticks are a no-op</td>
+        <td><code>listener.rs:39-44</code> (B1). The capture task is dead before the first key is pressed; no other capture behavior is observable until this is fixed. Then re-verify the <code>Ctrl+Super</code> start/stop flow end-to-end on the desktop.</td></tr>
+    <tr><td class="prio p0">2</td>
+        <td>Fix the provisioning layout: keep <code>tdt/</code> in the download URL, strip it from the local paths (probe + write destination)</td>
+        <td>(B2, owner-confirmed for the probe). Result: <code>is_model_available</code> matches the flat layout the ParakeetTDT model reads; fresh machines provision <code>parakeet/&lt;basename&gt;</code>; the download branch stops running on every startup. hf-hub couples URL and local name, so the split must be handled in <code>model.rs</code> (e.g. download to <code>parakeet/tdt/</code>, move to flat; or per-file basename destinations).</td></tr>
+    <tr><td class="prio p0">3</td>
+        <td>Update the specs (OpenSpec) to the intentional design</td>
+        <td>S1 (capture key = <code>Ctrl+Super</code>, with the rationale recorded), S2 (7-file <code>tdt/</code> set, flat local layout), S3 (location wording). This is the primary "restore conformance" path now — conformance is restored forward, by amending the specs, not by reverting code.</td></tr>
+  </table>
+</div>
+
+<h3>P1 — robustness and conformance quality</h3>
+<div class="card">
+  <table>
+    <tr><th style="width:8%">#</th><th>Action</th><th style="width:34%">Why / how</th></tr>
+    <tr><td class="prio p1">4</td>
+        <td>Integrity verification: pin <code>EXPECTED_SIZES</code> for the required set (values in §7), verify byte counts after download, reject + delete on mismatch; non-empty readiness</td>
+        <td>(B3, B4) A truncated 2.4&nbsp;GB download must not be reported ready. Sizes are known for every candidate file, so this is a small, well-specified change. Temp-then-rename (as in the deleted implementation) is the cleanest way to make it atomic.</td></tr>
+    <tr><td class="prio p1">5</td>
+        <td>Decide whether the 3 int8/<code>nemo128</code> files are needed; if not, drop them from <code>REQUIRED_FILES</code></td>
+        <td>The confirmed-working set on disk is the 4 non-int8 files. Dropping the rest saves ~670&nbsp;MB of first-run download (and per-startup re-fetches, until #2 is fixed).</td></tr>
+    <tr><td class="prio p1">6</td>
+        <td>Surface task failures in <code>main.rs</code></td>
+        <td>Select on listener/recorder task completion: if either returns <code>Err</code> or exits early (including panics → <code>JoinError</code>), log it and shut down non-zero instead of hanging with dead capture. Replace <code>expect()</code> at <code>main.rs:14</code> with error propagation.</td></tr>
+    <tr><td class="prio p1">7</td>
+        <td>Make the capture state machine OS-free: a small pure struct holding the modifier state with <code>handle_event → Option&lt;Transition&gt;</code>, unit-tested against the spec scenarios (press with modifiers already held; single modifier ⇒ not active; release on either modifier dropped; repeated cycles in order); <code>KeyListener</code> becomes a thin evdev adapter</td>
+        <td>Restores the design doc's "isolate the key source behind a trait" decision; removes the need for evdev in unit tests; CI stops depending on the host's input devices.</td></tr>
+    <tr><td class="prio p1">8</td>
+        <td>Rebuild provisioning tests: fast unit tests for detection (all present ⇒ skip; one missing/zero-byte ⇒ proceed) and integrity rejection (wrong size ⇒ error, no ready); keep the real download test <code>#[ignore]</code>d but point it at a temp dir and stop deleting the user's model directory</td>
+        <td>(B5) The current integration test also errors if the directory doesn't exist (<code>remove_dir_all</code> + <code>?</code>), and it destroys the very files it should be provisioning around.</td></tr>
+    <tr><td class="prio p1">9</td>
+        <td>Reconcile grab mode (code vs. design doc) based on what actually happens on the desktop</td>
+        <td>§5.4. The successful test with <code>.grab()</code> this morning contradicts the doc's "must not grab" — one of the two is stale.</td></tr>
+  </table>
+</div>
+
+<h3>P2 — hygiene and the next capability layer</h3>
+<div class="card">
+  <table>
+    <tr><th style="width:8%">#</th><th>Action</th><th style="width:34%">Why / how</th></tr>
+    <tr><td class="prio p2">10</td><td>Remove unused dependencies: <code>log</code>, <code>env_logger</code>, <code>futures</code>, <code>rand</code> (re-check after P1; the integrity work may reuse some)</td><td>Shrinks build and dependency surface; <code>rand = "0.8"</code> is outdated if kept.</td></tr>
+    <tr><td class="prio p2">11</td><td>Fix the 3 clippy warnings and add <code>-D warnings</code> to CI</td><td>The archived acceptance criterion was "clippy with no warnings"; it is currently false and would otherwise rot silently.</td></tr>
+    <tr><td class="prio p2">12</td><td>Commit or drop the untracked <code>AGENTS.md</code> / <code>WATCHDOG.md</code></td><td>Repo state hygiene.</td></tr>
+    <tr><td class="prio p2">13</td><td>Next capability per the architecture: PipeWire capture in <code>Recorder</code>, then <code>parakeet_rs</code> transcription inside the daemon (making "provisioning before load" real), then <code>/dev/uinput</code> injection and D-Bus notifications; flesh out <code>steno-cosmic</code></td><td>Every spec-scoped capability currently terminates in a boolean flag. Each of these deserves its own OpenSpec change so the archive stays truthful.</td></tr>
+    <tr><td class="prio p2">14</td><td>Fill in README "Getting started"</td><td>First-run experience (input group / permissions, model download time) is currently undocumented.</td></tr>
+  </table>
+</div>
+
+<h2 id="appendix">7. Verification appendix</h2>
+<div class="card">
+  <p>Commands and checks run for this review (all at repo root, HEAD <code>8313ca4</code>, unless noted):</p>
+  <pre><code>cargo build                  # ok
+cargo test                   # 5 passed, 0 failed, 1 ignored (model download)
+cargo clippy --all-targets   # 3 warnings (model.rs:62, recorder.rs:62, recorder.rs:73)
+git log --oneline -15        # history shown in §4
+ls -la ~/.config/steno/models/parakeet/   # 4 of 7 files, flat, sizes below
+# HF API: GET /api/models/altunenes/parakeet-rs/tree/main[
+   /tdt]                       # repo layout + exact sizes below
+# hf-hub 1.0.0 source: repository/download.rs:323, xet.rs:581  # dest = local_dir.join(filename)
+git show b216abb~1:crates/steno-daemon/src/model.rs        # deleted (non-working) implementation
+git show b216abb~1:crates/steno-daemon/src/capture_key.rs  # deleted (non-working) implementation</code></pre>
+
+  <p>Repo <code>tdt/</code> contents (HF API, 2026-08-23) vs. local disk:</p>
+  <table>
+    <tr><th>File (repo: <code>tdt/…</code>)</th><th>Repo size (bytes)</th><th>On disk (flat in <code>parakeet/</code>)</th></tr>
+    <tr><td><code>decoder_joint-model.int8.onnx</code></td><td>18,202,004</td><td>— missing</td></tr>
+    <tr><td><code>decoder_joint-model.onnx</code></td><td>72,520,893</td><td>72,520,893 ✓</td></tr>
+    <tr><td><code>encoder-model.int8.onnx</code></td><td>652,183,999</td><td>— missing</td></tr>
+    <tr><td><code>encoder-model.onnx</code></td><td>41,770,866</td><td>41,770,866 ✓</td></tr>
+    <tr><td><code>encoder-model.onnx.data</code></td><td>2,435,420,160</td><td>2,435,420,160 ✓</td></tr>
+    <tr><td><code>nemo128.onnx</code></td><td>139,764</td><td>— missing</td></tr>
+    <tr><td><code>vocab.txt</code></td><td>93,939</td><td>93,939 ✓</td></tr>
+  </table>
+
+  <p>Empirical check of the availability-check probe path (owner-confirmed invalid — "it needs to strip the tdt/ path"):</p>
+  <pre><code>let p = Path::new("/home/u/.config/steno/models/parakeet");
+p.with_file_name("tdt/decoder_joint-model.int8.onnx")
+// → /home/u/.config/steno/models/tdt/decoder_joint-model.int8.onnx
+//   (the `parakeet` segment is replaced, not kept)
+// actual file location:   /home/u/.config/steno/models/parakeet/decoder_joint-model.int8.onnx  (flat)
+// code's download dest:   /home/u/.config/steno/models/parakeet/tdt/...  (hf-hub joins filename)
+// ⇒ the probe path matches neither.</code></pre>
+
+  <p>Empirical check of the listener dead-on-arrival panic (temporary integration test, removed after the run):</p>
+  <pre><code>let listener = KeyListener::new().expect("build key listener");
+let handle = tokio::spawn(async move { listener.listen(tx, token).await });
+// no keys held; wait up to 10 s for the task to finish
+
+# → thread panicked at crates/steno-daemon/src/listener.rs:44:18:
+#     called `Option::unwrap()` on a `None` value
+#   task died in ~0.4 s: JoinError::Panic("called `Option::unwrap()` on a `None` value")
+# (panic=true, exact Option::unwrap() message — the Err-return path from
+#  active_modifiers() would have produced no panic, so the panic is isolated
+#  to the .unwrap() at listener.rs:44)</code></pre>
+
+  <p class="evidence">Nothing in the repository was modified during this review. No fixes were applied.
+  Design-intent statements (capture key <code>Ctrl+Super</code>, flat model layout works with ParakeetTDT,
+  availability check needs the <code>tdt/</code> strip) are owner-confirmed, 2026-08-23.</p>
+</div>
+
+<footer>
+  Generated 2026-08-23 · Scope: <code>openspec/specs/</code> (2 specs) vs. <code>crates/</code> ·
+  Method: static review of all spec requirements and scenarios against source, git history, build/test/clippy runs,
+  HuggingFace repo API, hf-hub 1.0.0 source, and the local model directory — with owner-confirmed design intent.
+</footer>
+
+</div>
+</body>
+</html>
