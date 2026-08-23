@@ -22,7 +22,7 @@ export default function (pi: HookAPI) {
     try {
       const result = await pi.exec(
         "cargo",
-        ["clippy", "--", "--format", "short"],
+        ["clippy", "--message-format", "short"],
         { cwd: ctx.cwd, timeout: 30_000 },
       );
 
