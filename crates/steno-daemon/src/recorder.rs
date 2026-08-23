@@ -63,7 +63,7 @@ mod tests {
 
         subject.handle_command(RecorderCommand::Start);
 
-        assert_eq!(subject.is_recording, true);
+        assert!(subject.is_recording);
     }
 
     #[test]
@@ -75,6 +75,6 @@ mod tests {
         subject.handle_command(RecorderCommand::Start);
         subject.handle_command(RecorderCommand::Stop);
 
-        assert_eq!(subject.is_recording, false);
+        assert!(!subject.is_recording);
     }
 }

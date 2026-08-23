@@ -33,8 +33,11 @@ async fn main() -> Result<()> {
     let listener = KeyListener::new()?;
     let recorder = Recorder::new();
 
+    // Ensure the transcription model is available.
+    steno_daemon::model::ensure_parakeet_model().await?;
+
     // Spawn the key listener that will grab Ctrl+Super to trigger the recording of audio.
-    // It will poll every 15 milliseconds if the recording trigger is active or not.
+    // It will poll every 15 milliseconds for the recording trigger.
     tracker.spawn(listener.listen(tx, token.clone()));
     tracker.spawn(recorder.listen(rx, token.clone()));
     tracker.close();
