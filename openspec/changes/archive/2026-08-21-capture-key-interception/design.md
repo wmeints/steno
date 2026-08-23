@@ -91,3 +91,23 @@ The capture key is registered as a global hotkey (`"Ctrl+Super+Space"`), so `kbd
 `crates/steno-daemon/src/capture_key.rs` was rewritten around `HotkeyManager`; `main.rs` builds the capture hotkey and calls `CaptureKey::run`. `cargo build`, `cargo clippy`, and `cargo test` pass; the daemon starts and runs without the grab-all failure.
 
 Caveat to verify physically: `kbd-global` fires the callback once per activation (not on release), so the release is derived from the modifier state. Confirm on the Cosmic session that both `capture_key: pressed` and `capture_key: released` are logged for a physical hold/release of <kbd>Ctrl</kbd>+<kbd>Super</kbd>+<kbd>Space</kbd>.
+## Post-archive update (2026-08-23)
+
+The capture key was deliberately changed from <kbd>Ctrl</kbd>+<kbd>Super</kbd>+<kbd>Space</kbd>
+to <kbd>Ctrl</kbd>+<kbd>Super</kbd> (owner-confirmed, 2026-08-23): the hotkey registration
+with a <kbd>Space</kbd> base key — the form this document ends with — was tried and did not
+work on the target desktop. The key is now detected by polling
+`manager.active_modifiers()` every 15 ms: the capture key is the pair of modifiers
+alone, with **no base key**; active means both <kbd>Ctrl</kbd> and <kbd>Super</kbd> are held,
+release means either modifier is dropped. The transition logic lives in a pure,
+OS-free `CaptureState` struct (unit-tested without evdev); `KeyListener` is a thin
+evdev adapter that forwards transitions and logs `capture key pressed` /
+`capture key released`. Do not reintroduce the <kbd>Space</kbd> base key; the spec
+(`openspec/specs/capture-key-interception`) records the rationale.
+
+Open item (separate backlog entry, not resolved here): the current code builds the
+`HotkeyManager` with `.grab()`, while the migration section above settled on **no**
+grab after the evdev grab-all form broke the user's session. The `.grab()` form was
+tested successfully on the desktop 2026-08-23, so kbd-global's grab may behave
+differently from the evdev exclusive grab that broke the session; reconcile the two
+explicitly before treating either as the final form.
