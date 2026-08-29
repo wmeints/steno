@@ -3,3 +3,6 @@
 [workspace]
 resolver = "3"
 members = ["crates/steno-cosmic","crates/steno-daemon"]
+
+[workspace.lints.clippy]
+cognitive_complexity = "deny"

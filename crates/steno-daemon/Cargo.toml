@@ -3,6 +3,9 @@ name = "steno-daemon"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 kbd = "0.2.0"
 kbd-global = { version = "0.2.0", features = ["grab"] }
