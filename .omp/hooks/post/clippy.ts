@@ -1,5 +1,10 @@
 import type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";
 
+// Parse cargo's short-format output into `file:line:col: error|warning`
+// issue lines. Short format emits one line per issue; every other line
+// (build progress, `error: could not compile ...` trailers) is dropped.
+const SHORT_LINE = /^[^:\s][^:\n]*:\d+:\d+: (error|warning)/;
+
 function extractPath(event: { input: Record<string, unknown> }): string | undefined {
   const path = event.input.path;
   if (typeof path === "string") return path;
@@ -43,15 +48,20 @@ export default function (pi: HookAPI) {
         return;
       }
 
-      const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-      if (!output) {
+      const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
+      const issues = output
+        .split("\n")
+        .filter((line) => SHORT_LINE.test(line) && line.startsWith(`${path}:`));
+      if (issues.length === 0) {
         return;
       }
 
       pi.sendMessage(
         {
           customType: "clippy-result",
-          content: `cargo clippy found issues in ${path}:\n\n${output}`,
+          content: `cargo clippy found issues in ${path}:\n\n${issues
+            .join("\n")
+            .trim()}`,
           display: true,
           attribution: "system",
         },
