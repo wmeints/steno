@@ -3,6 +3,15 @@ name = "steno-daemon"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# CUDA transcription is the supported path; build with
+# `--no-default-features` for a CPU-only (portable) daemon.
+default = ["cuda"]
+cuda = ["parakeet-rs/cuda"]
+
+[lints]
+workspace = true
+
 [dependencies]
 kbd = "0.2.0"
 kbd-global = { version = "0.2.0", features = ["grab"] }
@@ -16,3 +25,7 @@ tokio-util = { version = "0.7.19", features = ["rt"] }
 anyhow = "1.0.104"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
+parakeet-rs = "0.3.7"
+pipewire = "0.10.1"
+hound = "3.5.1"
+chrono = "0.4.45"

@@ -17,6 +17,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # pkg-config is preinstalled on github-hosted ubuntu runners but is a
+      # hard requirement of system-deps (pipewire-sys/libspa-sys build.rs).
+      # Note: the cuda feature makes ort-sys download the CUDA-13 ONNX
+      # Runtime prebuilt from cdn.pyke.io at first cold build.
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libpipewire-0.3-dev libspa-0.2-dev libclang-dev
+
       - name: Validate code style
         run: cargo clippy --all-targets --all-features -- -D warnings
 

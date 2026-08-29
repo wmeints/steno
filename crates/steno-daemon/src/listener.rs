@@ -5,6 +5,7 @@ use kbd_global::backend::Backend;
 use kbd_global::manager::HotkeyManager;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
+use tokio::time::Interval;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 
@@ -50,6 +51,14 @@ pub struct KeyListener {
     state: CaptureState,
 }
 
+/// Log the user-visible transition for a forwarded capture command.
+fn log_command(cmd: &RecorderCommand) {
+    match cmd {
+        RecorderCommand::Start => tracing::info!("capture key pressed"),
+        RecorderCommand::Stop => tracing::info!("capture key released"),
+    }
+}
+
 impl KeyListener {
     pub fn new() -> Result<KeyListener> {
         let hotkey_mgr = HotkeyManager::builder()
@@ -71,26 +80,35 @@ impl KeyListener {
         let mut ticker = interval(Duration::from_millis(15));
 
         loop {
-            let modifiers = self.hotkey_mgr.active_modifiers()?;
+            self.poll_once(&tx).await?;
 
-            // Forward only transitions; an idle tick is a no-op.
-            if let Some(cmd) = self.state.handle(
-                modifiers.contains(Modifier::Ctrl),
-                modifiers.contains(Modifier::Super),
-            ) {
-                match cmd {
-                    RecorderCommand::Start => tracing::info!("capture key pressed"),
-                    RecorderCommand::Stop => tracing::info!("capture key released"),
-                }
-                tx.send(cmd).await?;
-            }
-
-            tokio::select! {
-                _ = token.cancelled() => break,
-                _ = ticker.tick() => {}
+            if Self::tick(&mut ticker, &token).await {
+                break;
             }
         }
 
+        Ok(())
+    }
+
+    /// Wait for the next capture tick; true when cancellation fired.
+    async fn tick(ticker: &mut Interval, token: &CancellationToken) -> bool {
+        tokio::select! {
+            _ = token.cancelled() => true,
+            _ = ticker.tick() => false,
+        }
+    }
+    /// Sample the held modifiers and forward only transitions; an idle
+    /// tick is a no-op.
+    async fn poll_once(&mut self, tx: &Sender<RecorderCommand>) -> Result<()> {
+        let modifiers = self.hotkey_mgr.active_modifiers()?;
+        let Some(cmd) = self.state.handle(
+            modifiers.contains(Modifier::Ctrl),
+            modifiers.contains(Modifier::Super),
+        ) else {
+            return Ok(());
+        };
+        log_command(&cmd);
+        tx.send(cmd).await?;
         Ok(())
     }
 }

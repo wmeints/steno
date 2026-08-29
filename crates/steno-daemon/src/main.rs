@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use steno_daemon::listener::KeyListener;
 use steno_daemon::recorder::{Recorder, RecorderCommand};
@@ -11,6 +12,11 @@ use tokio_util::task::TaskTracker;
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
 
+    let debug = std::env::args().any(|arg| arg == "--debug");
+    if debug {
+        tracing::info!("debug mode enabled, recordings are saved to /tmp/steno");
+    }
+
     let token = CancellationToken::new();
     let tracker = TaskTracker::new();
 
@@ -18,11 +24,29 @@ async fn main() -> Result<()> {
     // can start/stop the recording depending on the key state.
     let (tx, rx) = channel::<RecorderCommand>(32);
 
-    let listener = KeyListener::new()?;
-    let recorder = Recorder::new();
-
     // Ensure the transcription model is available.
     steno_daemon::model::ensure_parakeet_model().await?;
+
+    // Load the Parakeet TDT model. With the `cuda` feature the CUDA
+    // execution provider is requested; it still falls back to CPU at
+    // session-build time when CUDA is unusable.
+    let model_dir = steno_daemon::model::parakeet_model_dir()?;
+    let model_config = parakeet_rs::ExecutionConfig::new();
+    #[cfg(feature = "cuda")]
+    let model_config = model_config.with_execution_provider(parakeet_rs::ExecutionProvider::Cuda);
+    // The blocking GPU/CPU session load runs before any task exists, so it
+    // never starves the runtime.
+    let model = Arc::new(Mutex::new(parakeet_rs::ParakeetTDT::from_pretrained(
+        &model_dir,
+        Some(model_config),
+    )?));
+    let recorder = Recorder::new(model, tracker.clone(), debug);
+
+    // Constructed only now, after the potentially multi-minute first-run
+    // model download and load: KeyListener::new exclusively grabs evdev
+    // keyboards, so Ctrl+Super must not be swallowed while the daemon
+    // still cannot capture anything.
+    let listener = KeyListener::new()?;
 
     // Spawn the key listener that will grab Ctrl+Super to trigger the recording of audio.
     // It will poll every 15 milliseconds for the recording trigger.
@@ -30,8 +54,7 @@ async fn main() -> Result<()> {
     let recorder_task = tracker.spawn(recorder.listen(rx, token.clone()));
     tracker.close();
 
-    let mut sigterm =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
     tracing::info!("daemon active");
 
