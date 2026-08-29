@@ -61,7 +61,10 @@ pub async fn ensure_parakeet_model() -> Result<()> {
 /// otherwise `$HOME/.config`. Fails when neither can be derived —
 /// provisioning must not fall back to a temporary, world-readable
 /// location.
-fn resolve_config_dir(xdg: Option<&std::ffi::OsStr>, home: Option<&std::ffi::OsStr>) -> Result<PathBuf> {
+fn resolve_config_dir(
+    xdg: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf> {
     if let Some(xdg) = xdg.filter(|path| !path.is_empty()) {
         return Ok(PathBuf::from(xdg));
     }
@@ -106,7 +109,9 @@ fn basename(repo_path: &str) -> &str {
 
 /// A file counts as provisioned only when it exists and is non-empty.
 fn file_is_ready(file: &Path) -> bool {
-    std::fs::metadata(file).map(|metadata| metadata.len() > 0).unwrap_or(false)
+    std::fs::metadata(file)
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
 }
 
 /// The model is available only when every required file exists, flat in
@@ -149,17 +154,21 @@ async fn download_model() -> Result<()> {
     result
 }
 
-async fn download_all(repo: &HFRepository<RepoTypeModel>, staging: &Path, model_dir: &Path) -> Result<()> {
-        for (repo_path, expected_size) in REQUIRED_FILES {
-            let dest = model_dir.join(basename(repo_path));
-            if file_is_ready(&dest) {
-                continue;
+async fn download_all(
+    repo: &HFRepository<RepoTypeModel>,
+    staging: &Path,
+    model_dir: &Path,
+) -> Result<()> {
+    for (repo_path, expected_size) in REQUIRED_FILES {
+        let dest = model_dir.join(basename(repo_path));
+        if file_is_ready(&dest) {
+            continue;
         }
 
         download_one(repo, repo_path, *expected_size, staging, &dest).await?;
     }
 
-        Ok(())
+    Ok(())
 }
 
 async fn download_one(
@@ -208,8 +217,8 @@ fn place_verified(staged: &Path, dest: &Path, expected_size: u64) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::ffi::OsStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     static DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 

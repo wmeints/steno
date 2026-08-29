@@ -1,5 +1,23 @@
+//! Recorder lifecycle: capture microphone audio on Start, write it to a
+//! timestamped WAV in `/tmp/steno` on Stop when debug mode is enabled, and
+//! trigger Parakeet TDT transcription of the recording.
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use parakeet_rs::Transcriber;
 use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
+
+use crate::capture::CaptureSession;
+use crate::wav;
+
+/// Directory captured WAVs are written to for debugging.
+const WAV_DIR: &str = "/tmp/steno";
+
+/// How long capture may take to reach the streaming state.
+const START_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RecorderCommand {
@@ -8,19 +26,19 @@ pub enum RecorderCommand {
 }
 
 pub struct Recorder {
-    is_recording: bool,
-}
-
-impl Default for Recorder {
-    fn default() -> Self {
-        Self::new()
-    }
+    model: Arc<Mutex<parakeet_rs::ParakeetTDT>>,
+    debug: bool,
+    session: Option<CaptureSession>,
+    wav_path: Option<PathBuf>,
 }
 
 impl Recorder {
-    pub fn new() -> Self {
+    pub fn new(model: Arc<Mutex<parakeet_rs::ParakeetTDT>>, debug: bool) -> Self {
         Self {
-            is_recording: false,
+            model,
+            debug,
+            session: None,
+            wav_path: None,
         }
     }
 
@@ -28,54 +46,124 @@ impl Recorder {
         loop {
             tokio::select! {
                 _ = ct.cancelled() => break,
-                Some(msg) = rx.recv() => self.handle_command(msg),
+                Some(msg) = rx.recv() => self.handle_command(msg).await,
             }
+        }
+
+        // Best-effort cleanup so shutdown never leaves the microphone open.
+        if let Some(session) = self.session.take() {
+            let _ = session.stop();
         }
     }
 
     pub fn is_recording(&self) -> bool {
-        self.is_recording
+        self.session.is_some()
     }
 
-    fn handle_command(&mut self, msg: RecorderCommand) {
-        if let RecorderCommand::Start = msg {
-            self.is_recording = true;
-            tracing::info!("Start recording");
-        }
-
-        if let RecorderCommand::Stop = msg
-            && self.is_recording
-        {
-            self.is_recording = false;
-            tracing::info!("Stop recording");
+    async fn handle_command(&mut self, cmd: RecorderCommand) {
+        match cmd {
+            RecorderCommand::Start => self.start().await,
+            RecorderCommand::Stop => self.stop().await,
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    async fn start(&mut self) {
+        if self.is_recording() {
+            tracing::debug!("already recording, ignoring Start");
+            return;
+        }
 
-    #[test]
-    fn test_start_without_recording() {
-        let mut subject = Recorder::new();
+        let (session, ready) = CaptureSession::start();
 
-        assert!(!subject.is_recording);
+        match tokio::time::timeout(START_TIMEOUT, ready).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(reason))) => {
+                let _ = session.stop();
+                tracing::error!("capture failed to start: {reason}");
+                return;
+            }
+            Ok(Err(join)) => {
+                let _ = session.stop();
+                tracing::error!("capture readiness task ended: {join:?}");
+                return;
+            }
+            Err(_) => {
+                let _ = session.stop();
+                tracing::error!("capture failed to start within {START_TIMEOUT:?}");
+                return;
+            }
+        }
 
-        subject.handle_command(RecorderCommand::Start);
-
-        assert!(subject.is_recording);
+        self.session = Some(session);
+        if self.debug {
+            let path = PathBuf::from(WAV_DIR).join(format!(
+                "{}.wav",
+                chrono::Local::now().format("%Y%m%d-%H%M%S-%3f")
+            ));
+            tracing::info!("recording started, saving to {}", path.display());
+            self.wav_path = Some(path);
+        } else {
+            tracing::info!("recording started");
+        }
     }
 
-    #[test]
-    fn test_stop_while_recording() {
-        let mut subject = Recorder::new();
+    async fn stop(&mut self) {
+        if !self.is_recording() {
+            tracing::debug!("not recording, ignoring Stop");
+            return;
+        }
 
-        assert!(!subject.is_recording);
+        let session = self
+            .session
+            .take()
+            .expect("is_recording checked the session");
 
-        subject.handle_command(RecorderCommand::Start);
-        subject.handle_command(RecorderCommand::Stop);
+        let samples = match session.stop() {
+            Ok(samples) => samples,
+            Err(e) => {
+                tracing::error!("capture ended with error: {e}");
+                return;
+            }
+        };
 
-        assert!(!subject.is_recording);
+        if samples.is_empty() {
+            tracing::warn!("capture produced no audio");
+            return;
+        }
+
+        if let Some(path) = self.wav_path.take() {
+            if let Err(e) = wav::write_wav(&path, &samples) {
+                tracing::error!("failed to write {}: {e}", path.display());
+                return;
+            }
+            tracing::info!(
+                "saved recording to {} ({} s)",
+                path.display(),
+                samples.len() as f64 / wav::SAMPLE_RATE as f64
+            );
+        }
+
+        self.transcribe(samples);
+    }
+
+    /// Transcribe the captured samples fire-and-forget so a new press during
+    /// inference is still served; the model mutex serializes concurrent
+    /// inferences.
+    fn transcribe(&self, samples: Vec<f32>) {
+        let model = Arc::clone(&self.model);
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                model
+                    .lock()
+                    .expect("model mutex poisoned")
+                    .transcribe_samples(samples, wav::SAMPLE_RATE, 1, None)
+            })
+            .await;
+            match result {
+                Ok(Ok(transcription)) => tracing::info!("transcription: {}", transcription.text),
+                Ok(Err(e)) => tracing::error!("transcription failed: {e}"),
+                Err(join) => tracing::error!("transcription task ended: {join:?}"),
+            }
+        });
     }
 }

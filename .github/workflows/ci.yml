@@ -17,6 +17,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libspa-0.2-dev libclang-dev
+
       - name: Validate code style
         run: cargo clippy --all-targets --all-features -- -D warnings
 
