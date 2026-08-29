@@ -1,14 +1,15 @@
 //! Recorder lifecycle: capture microphone audio on Start, write it to a
-//! timestamped WAV in `/tmp/steno` on Stop when debug mode is enabled, and
-//! trigger Parakeet TDT transcription of the recording.
+//! timestamped WAV when debug mode is enabled, and trigger Parakeet TDT
+//! transcription of the recording.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use parakeet_rs::Transcriber;
 use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::capture::CaptureSession;
 use crate::wav;
@@ -27,16 +28,35 @@ pub enum RecorderCommand {
 
 pub struct Recorder {
     model: Arc<Mutex<parakeet_rs::ParakeetTDT>>,
+    tracker: TaskTracker,
     debug: bool,
+    wav_dir: PathBuf,
     session: Option<CaptureSession>,
     wav_path: Option<PathBuf>,
 }
 
 impl Recorder {
-    pub fn new(model: Arc<Mutex<parakeet_rs::ParakeetTDT>>, debug: bool) -> Self {
+    pub fn new(
+        model: Arc<Mutex<parakeet_rs::ParakeetTDT>>,
+        tracker: TaskTracker,
+        debug: bool,
+    ) -> Self {
+        Self::with_wav_dir(model, tracker, debug, PathBuf::from(WAV_DIR))
+    }
+
+    /// Build a recorder writing debug WAVs to `wav_dir` (tests inject a
+    /// private directory so a concurrently running daemon cannot interfere).
+    pub fn with_wav_dir(
+        model: Arc<Mutex<parakeet_rs::ParakeetTDT>>,
+        tracker: TaskTracker,
+        debug: bool,
+        wav_dir: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             model,
+            tracker,
             debug,
+            wav_dir: wav_dir.into(),
             session: None,
             wav_path: None,
         }
@@ -46,24 +66,29 @@ impl Recorder {
         while let Some(msg) = Self::next_command(&mut rx, &ct).await {
             self.handle_command(msg).await;
         }
-        self.dispose();
+        self.dispose().await;
     }
 
-    /// The next command, or None once cancellation is requested.
+    /// The next command, or None once cancellation is requested and no
+    /// command is already queued. Biased so a Stop delivered just before
+    /// cancellation still flushes its recording before shutdown.
     async fn next_command(
         rx: &mut Receiver<RecorderCommand>,
         ct: &CancellationToken,
     ) -> Option<RecorderCommand> {
         tokio::select! {
-            _ = ct.cancelled() => None,
+            biased;
             msg = rx.recv() => msg,
+            () = ct.cancelled(), if rx.is_empty() => None,
+            else => None,
         }
     }
 
     /// Best-effort cleanup so shutdown never leaves the microphone open.
-    fn dispose(mut self) {
+    async fn dispose(&mut self) {
         if let Some(session) = self.session.take() {
-            let _ = session.stop();
+            // Joining the capture thread blocks; keep the runtime responsive.
+            let _ = tokio::task::spawn_blocking(move || session.stop()).await;
         }
     }
 
@@ -114,7 +139,7 @@ impl Recorder {
             tracing::info!("recording started");
             return;
         }
-        let path = PathBuf::from(WAV_DIR).join(format!(
+        let path = self.wav_dir.join(format!(
             "{}.wav",
             chrono::Local::now().format("%Y%m%d-%H%M%S-%3f")
         ));
@@ -123,63 +148,50 @@ impl Recorder {
     }
 
     async fn stop(&mut self) {
-        if !self.is_recording() {
+        let Some(session) = self.session.take() else {
             tracing::debug!("not recording, ignoring Stop");
             return;
-        }
-
-        let Some(session) = self.session.take() else {
-            return;
-        };
-        let samples = match session.stop() {
-            Ok(samples) => samples,
-            Err(e) => {
-                tracing::error!("capture ended with error: {e}");
-                return;
-            }
         };
 
-        self.finish_capture(samples).await;
+        // Joining the capture thread blocks; keep the runtime responsive.
+        let (samples, error) = tokio::task::spawn_blocking(move || session.stop())
+            .await
+            .expect("capture drain task panicked");
+
+        self.finish_capture(samples, error).await;
     }
 
-    /// Process the finished capture: save (in debug mode) and transcribe.
-    async fn finish_capture(&mut self, samples: Vec<f32>) {
+    /// Report a capture error, then save (in debug mode) and transcribe.
+    /// Samples captured before a mid-session error are salvaged.
+    async fn finish_capture(&mut self, samples: Vec<f32>, error: Option<String>) {
+        report_capture_error(error);
         if samples.is_empty() {
             tracing::warn!("capture produced no audio");
             return;
         }
 
-        if !self.save_debug_wav(&samples) {
-            return;
-        }
-
+        self.save_debug_wav(&samples).await;
         self.transcribe(samples);
     }
 
-    /// Write the debug WAV when one was requested. Returns false if the
-    /// capture should be discarded because the write failed.
-    fn save_debug_wav(&mut self, samples: &[f32]) -> bool {
+    /// Write the debug WAV when one was requested. A failed write is logged
+    /// only; transcription of the in-memory capture still proceeds.
+    async fn save_debug_wav(&mut self, samples: &[f32]) {
         let Some(path) = self.wav_path.take() else {
-            return true;
+            return;
         };
-        if let Err(e) = wav::write_wav(&path, samples) {
-            tracing::error!("failed to write {}: {e}", path.display());
-            return false;
-        }
-        tracing::info!(
-            "saved recording to {} ({} s)",
-            path.display(),
-            samples.len() as f64 / wav::SAMPLE_RATE as f64
-        );
-        true
+        let owned = samples.to_vec();
+        let logged = path.clone();
+        let result = tokio::task::spawn_blocking(move || wav::write_wav(&path, &owned)).await;
+        log_wav_result(&logged, samples, result);
     }
-
     /// Transcribe the captured samples fire-and-forget so a new press during
     /// inference is still served; the model mutex serializes concurrent
-    /// inferences.
+    /// inferences. The tracker keeps the daemon's shutdown drain waiting for
+    /// in-flight transcriptions.
     fn transcribe(&self, samples: Vec<f32>) {
         let model = Arc::clone(&self.model);
-        tokio::spawn(async move {
+        self.tracker.spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
                 model
                     .lock()
@@ -194,4 +206,34 @@ impl Recorder {
             }
         });
     }
+}
+
+/// Surface a capture failure; samples salvaged from before the error are
+/// still processed afterwards.
+fn report_capture_error(error: Option<String>) {
+    if let Some(e) = error {
+        tracing::error!("capture ended with error: {e}");
+    }
+}
+
+/// Log the outcome of a debug WAV write.
+fn log_wav_result(
+    path: &Path,
+    samples: &[f32],
+    result: Result<std::io::Result<()>, tokio::task::JoinError>,
+) {
+    match result {
+        Ok(Ok(())) => tracing::info!(
+            "saved recording to {} ({} s)",
+            path.display(),
+            seconds(samples)
+        ),
+        Ok(Err(e)) => tracing::error!("failed to write {}: {e}", path.display()),
+        Err(join) => tracing::error!("wav write task ended: {join:?}"),
+    }
+}
+
+/// Captured audio length in seconds.
+fn seconds(samples: &[f32]) -> f64 {
+    samples.len() as f64 / wav::SAMPLE_RATE as f64
 }

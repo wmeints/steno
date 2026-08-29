@@ -17,20 +17,27 @@ use tokio::sync::oneshot;
 const CAPTURE_RATE: u32 = 16_000;
 const CAPTURE_CHANNELS: u32 = 1;
 
+/// Readiness channel shared between the capture thread and `start()`'s
+/// caller. Whoever reports the streaming outcome takes the sender so the
+/// result is sent exactly once.
+type Ready = Arc<Mutex<Option<oneshot::Sender<Result<(), String>>>>>;
+
 /// One microphone capture run on a dedicated PipeWire thread.
 ///
 /// Samples accumulate as mono f32 at [`crate::wav::SAMPLE_RATE`]. Call
 /// [`CaptureSession::stop`] to end the capture and take the samples.
 pub struct CaptureSession {
     samples: Arc<Mutex<Vec<f32>>>,
-    stop: pw::channel::Sender<()>,
-    join: std::thread::JoinHandle<Result<(), String>>,
+    error: Arc<Mutex<Option<String>>>,
+    stop: Option<pw::channel::Sender<()>>,
+    join: Option<std::thread::JoinHandle<()>>,
 }
 
 impl CaptureSession {
     /// Spawn the PipeWire capture thread. The returned receiver resolves to
     /// `Ok(())` once the stream is streaming, or `Err(reason)` when capture
-    /// cannot start.
+    /// cannot start — including the concrete PipeWire setup or negotiation
+    /// failure.
     pub fn start() -> (CaptureSession, oneshot::Receiver<Result<(), String>>) {
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(pw::init);
@@ -38,44 +45,80 @@ impl CaptureSession {
         let (ready_tx, ready_rx) = oneshot::channel();
         let (stop_tx, stop_rx) = pw::channel::channel();
         let samples = Arc::new(Mutex::new(Vec::new()));
+        let error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
         let thread_samples = Arc::clone(&samples);
-        let join = std::thread::spawn(move || run_capture_loop(thread_samples, ready_tx, stop_rx));
+        let thread_error = Arc::clone(&error);
+        let join = std::thread::spawn(move || {
+            let ready: Ready = Arc::new(Mutex::new(Some(ready_tx)));
+            if let Err(reason) =
+                run_capture_loop(thread_samples, Arc::clone(&ready), thread_error, stop_rx)
+            {
+                // Report a setup or negotiation failure to the start()
+                // caller when the thread ended before announcing streaming;
+                // afterwards the failure lives in the error slot for stop().
+                if let Some(tx) = ready.lock().expect("ready mutex poisoned").take() {
+                    let _ = tx.send(Err(reason));
+                }
+            }
+        });
 
         (
             CaptureSession {
                 samples,
-                stop: stop_tx,
-                join,
+                error,
+                stop: Some(stop_tx),
+                join: Some(join),
             },
             ready_rx,
         )
     }
 
     /// Signal the capture loop to quit, join its thread, and return the
-    /// captured samples.
-    pub fn stop(self) -> Result<Vec<f32>, String> {
-        // A dead receiver surfaces via the join below.
-        let _ = self.stop.send(());
-        self.join
-            .join()
-            .map_err(|_| "capture thread panicked".to_string())??;
-        Ok(std::mem::take(
-            &mut *self.samples.lock().expect("samples mutex poisoned"),
-        ))
+    /// captured samples plus any error the loop hit (failed negotiation,
+    /// stream error, thread panic). Samples captured before a mid-session
+    /// error are still returned so a truncated take can be salvaged.
+    pub fn stop(mut self) -> (Vec<f32>, Option<String>) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        let panicked = match self.join.take() {
+            Some(join) => join.join().is_err(),
+            None => false,
+        };
+        let error = self
+            .error
+            .lock()
+            .expect("error mutex poisoned")
+            .take()
+            .or_else(|| panicked.then(|| "capture thread panicked".to_owned()));
+        let samples = std::mem::take(&mut *self.samples.lock().unwrap_or_else(|p| p.into_inner()));
+        (samples, error)
+    }
+}
+
+impl Drop for CaptureSession {
+    /// A session dropped without [`CaptureSession::stop`] still signals the
+    /// PipeWire thread to quit so the microphone is not held open. The join
+    /// is deliberately not waited on here so Drop never blocks.
+    fn drop(&mut self) {
+        if let Some(stop) = &self.stop {
+            let _ = stop.send(());
+        }
     }
 }
 
 struct CaptureData {
     format: AudioInfoRaw,
     samples: Arc<Mutex<Vec<f32>>>,
-    ready: Option<oneshot::Sender<Result<(), String>>>,
+    ready: Ready,
     error: Arc<Mutex<Option<String>>>,
 }
 
 fn run_capture_loop(
     samples: Arc<Mutex<Vec<f32>>>,
-    ready: oneshot::Sender<Result<(), String>>,
+    ready: Ready,
+    error: Arc<Mutex<Option<String>>>,
     stop_rx: pw::channel::Receiver<()>,
 ) -> Result<(), String> {
     let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(|e| e.to_string())?;
@@ -96,11 +139,10 @@ fn run_capture_loop(
     let stream =
         pw::stream::StreamBox::new(&core, "steno-capture", props).map_err(|e| e.to_string())?;
 
-    let error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let data = CaptureData {
         format: AudioInfoRaw::default(),
         samples,
-        ready: Some(ready),
+        ready,
         error: Arc::clone(&error),
     };
 
@@ -129,6 +171,7 @@ fn run_capture_loop(
                     .lock()
                     .expect("error mutex poisoned")
                     .replace(format!("failed to parse negotiated format: {e}"));
+                mainloop_param.quit();
                 return;
             }
             if user_data.format.format() != AudioFormat::F32LE
@@ -171,7 +214,7 @@ fn run_capture_loop(
         })
         .state_changed(move |_, user_data, _old, new| match new {
             pw::stream::StreamState::Streaming => {
-                if let Some(tx) = user_data.ready.take() {
+                if let Some(tx) = user_data.ready.lock().expect("ready mutex poisoned").take() {
                     let _ = tx.send(Ok(()));
                 }
             }
@@ -181,9 +224,6 @@ fn run_capture_loop(
                     .lock()
                     .expect("error mutex poisoned")
                     .replace(msg);
-                if let Some(tx) = user_data.ready.take() {
-                    let _ = tx.send(Err("stream entered error state".to_string()));
-                }
                 mainloop_state.quit();
             }
             _ => {}
@@ -224,8 +264,8 @@ fn run_capture_loop(
 
     mainloop.run();
 
-    match error.lock().expect("error mutex poisoned").take() {
-        Some(err) => Err(err),
+    match error.lock().expect("error mutex poisoned").clone() {
+        Some(reason) => Err(reason),
         None => Ok(()),
     }
 }
