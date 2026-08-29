@@ -43,14 +43,25 @@ impl Recorder {
     }
 
     pub async fn listen(mut self, mut rx: Receiver<RecorderCommand>, ct: CancellationToken) {
-        loop {
-            tokio::select! {
-                _ = ct.cancelled() => break,
-                Some(msg) = rx.recv() => self.handle_command(msg).await,
-            }
+        while let Some(msg) = Self::next_command(&mut rx, &ct).await {
+            self.handle_command(msg).await;
         }
+        self.dispose();
+    }
 
-        // Best-effort cleanup so shutdown never leaves the microphone open.
+    /// The next command, or None once cancellation is requested.
+    async fn next_command(
+        rx: &mut Receiver<RecorderCommand>,
+        ct: &CancellationToken,
+    ) -> Option<RecorderCommand> {
+        tokio::select! {
+            _ = ct.cancelled() => None,
+            msg = rx.recv() => msg,
+        }
+    }
+
+    /// Best-effort cleanup so shutdown never leaves the microphone open.
+    fn dispose(mut self) {
         if let Some(session) = self.session.take() {
             let _ = session.stop();
         }
@@ -75,36 +86,40 @@ impl Recorder {
 
         let (session, ready) = CaptureSession::start();
 
-        match tokio::time::timeout(START_TIMEOUT, ready).await {
-            Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(reason))) => {
-                let _ = session.stop();
-                tracing::error!("capture failed to start: {reason}");
-                return;
-            }
-            Ok(Err(join)) => {
-                let _ = session.stop();
-                tracing::error!("capture readiness task ended: {join:?}");
-                return;
-            }
-            Err(_) => {
-                let _ = session.stop();
-                tracing::error!("capture failed to start within {START_TIMEOUT:?}");
-                return;
-            }
+        if let Err(reason) = Self::await_ready(ready).await {
+            let _ = session.stop();
+            tracing::error!("capture failed to start: {reason}");
+            return;
         }
 
         self.session = Some(session);
-        if self.debug {
-            let path = PathBuf::from(WAV_DIR).join(format!(
-                "{}.wav",
-                chrono::Local::now().format("%Y%m%d-%H%M%S-%3f")
-            ));
-            tracing::info!("recording started, saving to {}", path.display());
-            self.wav_path = Some(path);
-        } else {
-            tracing::info!("recording started");
+        self.begin_capture();
+    }
+
+    /// Resolve the capture readiness channel within [`START_TIMEOUT`],
+    /// flattening every failure mode into one reason string.
+    async fn await_ready(
+        ready: tokio::sync::oneshot::Receiver<Result<(), String>>,
+    ) -> Result<(), String> {
+        match tokio::time::timeout(START_TIMEOUT, ready).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(_)) => Err("capture readiness task ended".to_owned()),
+            Err(_) => Err(format!("capture failed to start within {START_TIMEOUT:?}")),
         }
+    }
+
+    /// Announce the recording, attaching a debug WAV path when enabled.
+    fn begin_capture(&mut self) {
+        if !self.debug {
+            tracing::info!("recording started");
+            return;
+        }
+        let path = PathBuf::from(WAV_DIR).join(format!(
+            "{}.wav",
+            chrono::Local::now().format("%Y%m%d-%H%M%S-%3f")
+        ));
+        tracing::info!("recording started, saving to {}", path.display());
+        self.wav_path = Some(path);
     }
 
     async fn stop(&mut self) {
@@ -113,11 +128,9 @@ impl Recorder {
             return;
         }
 
-        let session = self
-            .session
-            .take()
-            .expect("is_recording checked the session");
-
+        let Some(session) = self.session.take() else {
+            return;
+        };
         let samples = match session.stop() {
             Ok(samples) => samples,
             Err(e) => {
@@ -126,24 +139,39 @@ impl Recorder {
             }
         };
 
+        self.finish_capture(samples).await;
+    }
+
+    /// Process the finished capture: save (in debug mode) and transcribe.
+    async fn finish_capture(&mut self, samples: Vec<f32>) {
         if samples.is_empty() {
             tracing::warn!("capture produced no audio");
             return;
         }
 
-        if let Some(path) = self.wav_path.take() {
-            if let Err(e) = wav::write_wav(&path, &samples) {
-                tracing::error!("failed to write {}: {e}", path.display());
-                return;
-            }
-            tracing::info!(
-                "saved recording to {} ({} s)",
-                path.display(),
-                samples.len() as f64 / wav::SAMPLE_RATE as f64
-            );
+        if !self.save_debug_wav(&samples) {
+            return;
         }
 
         self.transcribe(samples);
+    }
+
+    /// Write the debug WAV when one was requested. Returns false if the
+    /// capture should be discarded because the write failed.
+    fn save_debug_wav(&mut self, samples: &[f32]) -> bool {
+        let Some(path) = self.wav_path.take() else {
+            return true;
+        };
+        if let Err(e) = wav::write_wav(&path, samples) {
+            tracing::error!("failed to write {}: {e}", path.display());
+            return false;
+        }
+        tracing::info!(
+            "saved recording to {} ({} s)",
+            path.display(),
+            samples.len() as f64 / wav::SAMPLE_RATE as f64
+        );
+        true
     }
 
     /// Transcribe the captured samples fire-and-forget so a new press during

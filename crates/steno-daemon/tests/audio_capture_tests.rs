@@ -52,13 +52,26 @@ async fn run_capture_flow(model: Arc<Mutex<ParakeetTDT>>, debug: bool) -> Result
     let token = CancellationToken::new();
     let recorder_task = tokio::spawn(recorder.listen(rx, token.clone()));
 
+    record_two_seconds(&tx).await?;
+    shutdown_recorder(token, tx, recorder_task).await
+}
+
+/// Start, record for two seconds, then Stop.
+async fn record_two_seconds(tx: &tokio::sync::mpsc::Sender<RecorderCommand>) -> Result<()> {
     tx.send(RecorderCommand::Start).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
     tx.send(RecorderCommand::Stop).await?;
     // The WAV write happens synchronously inside stop(); give the command a
     // moment to be processed before the caller inspects the directory.
     tokio::time::sleep(Duration::from_secs(2)).await;
+    Ok(())
+}
 
+async fn shutdown_recorder(
+    token: CancellationToken,
+    tx: tokio::sync::mpsc::Sender<RecorderCommand>,
+    recorder_task: tokio::task::JoinHandle<()>,
+) -> Result<()> {
     token.cancel();
     drop(tx);
     recorder_task.await?;
