@@ -1,13 +1,14 @@
 //! Recorder lifecycle: capture microphone audio on Start, write it to a
-//! timestamped WAV when debug mode is enabled, and trigger Parakeet TDT
-//! transcription of the recording.
+//! timestamped WAV when debug mode is enabled, trigger Parakeet TDT
+//! transcription of the recording, and hand finished transcriptions to the
+//! injector task.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use parakeet_rs::Transcriber;
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
@@ -33,6 +34,7 @@ pub struct Recorder {
     wav_dir: PathBuf,
     session: Option<CaptureSession>,
     wav_path: Option<PathBuf>,
+    inject_tx: Sender<String>,
 }
 
 impl Recorder {
@@ -40,8 +42,9 @@ impl Recorder {
         model: Arc<Mutex<parakeet_rs::ParakeetTDT>>,
         tracker: TaskTracker,
         debug: bool,
+        inject_tx: Sender<String>,
     ) -> Self {
-        Self::with_wav_dir(model, tracker, debug, PathBuf::from(WAV_DIR))
+        Self::with_wav_dir(model, tracker, debug, PathBuf::from(WAV_DIR), inject_tx)
     }
 
     /// Build a recorder writing debug WAVs to `wav_dir` (tests inject a
@@ -51,6 +54,7 @@ impl Recorder {
         tracker: TaskTracker,
         debug: bool,
         wav_dir: impl Into<PathBuf>,
+        inject_tx: Sender<String>,
     ) -> Self {
         Self {
             model,
@@ -59,6 +63,7 @@ impl Recorder {
             wav_dir: wav_dir.into(),
             session: None,
             wav_path: None,
+            inject_tx,
         }
     }
 
@@ -188,9 +193,11 @@ impl Recorder {
     /// Transcribe the captured samples fire-and-forget so a new press during
     /// inference is still served; the model mutex serializes concurrent
     /// inferences. The tracker keeps the daemon's shutdown drain waiting for
-    /// in-flight transcriptions.
+    /// in-flight transcriptions. A finished transcription's text is handed
+    /// to the injector task.
     fn transcribe(&self, samples: Vec<f32>) {
         let model = Arc::clone(&self.model);
+        let inject_tx = self.inject_tx.clone();
         self.tracker.spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
                 model
@@ -200,11 +207,22 @@ impl Recorder {
             })
             .await;
             match result {
-                Ok(Ok(transcription)) => tracing::info!("transcription: {}", transcription.text),
+                Ok(Ok(transcription)) => {
+                    tracing::info!("transcription: {}", transcription.text);
+                    deliver_transcription(&inject_tx, transcription.text).await;
+                }
                 Ok(Err(e)) => tracing::error!("transcription failed: {e}"),
                 Err(join) => tracing::error!("transcription task ended: {join:?}"),
             }
         });
+    }
+}
+
+/// Send a finished transcription to the injector task, logging delivery
+/// failures (a closed or saturated channel must not kill the capture path).
+async fn deliver_transcription(inject_tx: &Sender<String>, text: String) {
+    if let Err(err) = inject_tx.send(text).await {
+        tracing::error!("failed to hand transcription to injector: {err}");
     }
 }
 

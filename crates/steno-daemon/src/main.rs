@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use steno_daemon::listener::KeyListener;
 use steno_daemon::recorder::{Recorder, RecorderCommand};
+use steno_daemon::uinput::{Injector, UinputDevice};
 use tokio::sync::mpsc::channel;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -27,6 +28,14 @@ async fn main() -> Result<()> {
     // Ensure the transcription model is available.
     steno_daemon::model::ensure_parakeet_model().await?;
 
+    // Create the virtual keyboard before anything else: the daemon must
+    // not run in a state where captured text has nowhere to go.
+    let injector = Injector::new(UinputDevice::open()?);
+
+    // Text to inject flows from the recorder (transcription output) to
+    // the injector task through this channel, FIFO.
+    let (inject_tx, inject_rx) = channel::<String>(16);
+
     // Load the Parakeet TDT model. With the `cuda` feature the CUDA
     // execution provider is requested; it still falls back to CPU at
     // session-build time when CUDA is unusable.
@@ -40,7 +49,7 @@ async fn main() -> Result<()> {
         &model_dir,
         Some(model_config),
     )?));
-    let recorder = Recorder::new(model, tracker.clone(), debug);
+    let recorder = Recorder::new(model, tracker.clone(), debug, inject_tx);
 
     // Constructed only now, after the potentially multi-minute first-run
     // model download and load: KeyListener::new exclusively grabs evdev
@@ -52,6 +61,7 @@ async fn main() -> Result<()> {
     // It will poll every 15 milliseconds for the recording trigger.
     let listener_task = tracker.spawn(listener.listen(tx, token.clone()));
     let recorder_task = tracker.spawn(recorder.listen(rx, token.clone()));
+    let injector_task = tracker.spawn(injector.listen(inject_rx, token.clone()));
     tracker.close();
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -80,6 +90,15 @@ async fn main() -> Result<()> {
         result = recorder_task => {
             return fail_task(
                 "recorder",
+                match result {
+                    Ok(()) => anyhow::anyhow!("task exited unexpectedly"),
+                    Err(join) => anyhow::anyhow!("task ended: {join:?}"),
+                },
+            );
+        }
+        result = injector_task => {
+            return fail_task(
+                "injector",
                 match result {
                     Ok(()) => anyhow::anyhow!("task exited unexpectedly"),
                     Err(join) => anyhow::anyhow!("task ended: {join:?}"),
