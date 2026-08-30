@@ -14,8 +14,8 @@ Mac, but not for Linux. So I decided to roll my own.
 
 ### Goals for this application
 
-- Provide a dictation interface for Linux computers that supports a wide range of 
-  applications e.g. terminals, web browsers, text editors, and desktop 
+- Provide a dictation interface for Linux computers that supports a wide range 
+  of applications e.g. terminals, web browsers, text editors, and desktop 
   applications.
 
 - Provide a better balance between typing and talking, so you have to use your
