@@ -48,7 +48,7 @@ that, you need the following tools:
 
 If you need help running Qwen 3.8 Flash on a DGX machine, have a look
 at [this awesome repository](https://github.com/hasso5703/dgx-spark-qwen38) by
-Hassan Basbunar.
+[Hassan Basbunar](https://www.linkedin.com/in/hasanbasbunar/).
 
 ## Getting started
 
