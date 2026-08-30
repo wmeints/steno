@@ -1,0 +1,16 @@
+[Unit]
+Description=Steno dictation daemon
+After=pipewire.service dbus.service
+
+[Service]
+ExecStart=%h/.local/bin/stenod
+Restart=on-failure
+Environment=LD_LIBRARY_PATH=%h/.local/lib/steno-cuda
+DevicePolicy=closed
+DeviceAllow=/dev/uinput rw
+# User D-Bus and PipeWire sockets stay reachable: they are socket files, not
+# device nodes, so DevicePolicy=closed does not affect them. Only /dev/uinput
+# is allowed above.
+
+[Install]
+WantedBy=default.target

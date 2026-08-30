@@ -3,6 +3,10 @@ name = "steno-daemon"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "stenod"
+path = "src/main.rs"
+
 [features]
 # CUDA transcription is the supported path; build with
 # `--no-default-features` for a CPU-only (portable) daemon.

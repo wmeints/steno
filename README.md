@@ -37,7 +37,30 @@ correct. The coding itself is done via [Qwen 3.8][qwen_model] on a
 
 ## Getting started
 
-TODO: Describe how to install the application.
+Build the release binary and run the installer from a graphical (systemd)
+user session:
+
+```bash
+cargo build --release -p steno-daemon   # or: scripts/install.sh --build
+scripts/install.sh
+```
+
+The installer places the daemon at `~/.local/bin/stenod`, enables and starts
+the `stenod` systemd **user** service (auto-starts on login, restarts on
+failure), and — asking for `sudo` once — installs the udev rule that grants
+the `uinput` group access to `/dev/uinput`. If your user was just added to
+the `uinput` group, log out and back in before the daemon can inject text.
+
+The service expects CUDA runtime libraries at `~/.local/lib/steno-cuda`. If
+yours live elsewhere, override the path with a drop-in instead of editing the
+unit:
+
+```bash
+systemctl --user edit stenod   # add e.g. Environment=LD_LIBRARY_PATH=/your/path
+```
+
+Check on the service with `systemctl --user status stenod` and view logs with
+`journalctl --user -u stenod`.
 
 ## Documentation
 
