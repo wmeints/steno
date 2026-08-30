@@ -35,6 +35,20 @@ harness engineering and making sure the architecture and functional specs are
 correct. The coding itself is done via [Qwen 3.8][qwen_model] on a 
 [Spark DGX][dgx_machine]. You can learn more in the engineering docs.
 
+## System requirements
+
+First, and foremost, use Linux. This tool doesn't work on Windows. Other than
+that, you need the following tools:
+
+- [Node](https://nodejs.org) - for the commitlint package
+- [Rust](https://rust-lang.org/tools/install/) - the main programming language
+- [Lefthook](https://lefthook.dev/) - for the pre-commit hooks
+- [Oh-my-pi](https://omp.sh/) - the agent used to write the code
+
+If you need help running Qwen 3.8 Flash on a DGX machine, have a look
+at [this awesome repository](https://github.com/hasso5703/dgx-spark-qwen38) by
+Hassan Basbunar.
+
 ## Getting started
 
 Build the release binary and run the installer from a graphical (systemd)
