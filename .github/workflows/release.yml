@@ -56,7 +56,7 @@ jobs:
         run: |
           gh release create "$PKG" "${PKG}.tar.gz" \
             --prerelease \
-            --title "stenod $PKG (nightly)" \
+            --title "Steno nightly-${GITHUB_SHA::7}" \
             --notes "Automatically built from main (${GITHUB_SHA}).
 
           Contents: stenod daemon binary, ONNX Runtime provider libraries
