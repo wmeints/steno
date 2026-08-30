@@ -34,7 +34,7 @@ The final check ensures that the agent uses
 
 ## Performing local code reviews
 
-We use the built-in `/review` skill from oh-my-pi to review the code. This runs
+I use the built-in `/review` skill from oh-my-pi to review the code. This runs
 multiple review agents in parallel to focus on different aspects of the code.
 
 I've found that this produces higher quality code 
