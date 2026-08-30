@@ -19,12 +19,9 @@ of the code with my keyboard anymore due to chronic condition.
 
 ## Supported agents
 
-This project is entirely optimized for working with Qwen 3.8 and 
+This project is entirely optimized for working with [Qwen 3.8][QWEN38] and 
 [Oh-my-pi][OMP]. You can try to use other agents, but I can't guarantee that it
-will work as intended.
-
-## Guides
-
-- [Specification workflow](./02-specification-workflow.md)
+will work as intended as I've built the harness to fit this combination.
 
 [OMP]: https://omp.sh/
+[QWEN38]: https://huggingface.co/Qwen/Qwen3.8-Flash-Next
