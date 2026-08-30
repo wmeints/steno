@@ -54,7 +54,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$PKG" \
+          gh release create "$PKG" "${PKG}.tar.gz" \
             --prerelease \
             --title "stenod $PKG (nightly)" \
             --notes "Automatically built from main (${GITHUB_SHA}).
