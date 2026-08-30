@@ -44,6 +44,7 @@ that, you need the following tools:
 - [Rust](https://rust-lang.org/tools/install/) - the main programming language
 - [Lefthook](https://lefthook.dev/) - for the pre-commit hooks
 - [Oh-my-pi](https://omp.sh/) - the agent used to write the code
+- [OpenSpec](https://openspec.dev/) - used for the spec-driven workflow
 
 If you need help running Qwen 3.8 Flash on a DGX machine, have a look
 at [this awesome repository](https://github.com/hasso5703/dgx-spark-qwen38) by
