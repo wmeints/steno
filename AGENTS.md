@@ -49,3 +49,8 @@ When not to be lazy:
 - Do not cut out validation, error handling, security, or real edge-cases.
 - Do not sip understanding. A small diff without understanding is just lazy.
 
+## Testing
+
+IMPORTANT: End-to-end tests are performed manually because you need access to 
+a physical keyboard and microphone. Provide instructions to the human to 
+perform any end-to-end tests.
