@@ -59,7 +59,15 @@ async fn run_capture_flow(model: Arc<Mutex<ParakeetTDT>>, debug: bool) -> Result
     // The injection channel's receiver is held open so transcription
     // delivery succeeds; the test asserts on WAVs, not injected text.
     let (inject_tx, _inject_rx) = channel::<String>(16);
-    let recorder = Recorder::with_wav_dir(model, TaskTracker::new(), debug, wav_dir(), inject_tx);
+    let (notifier_tx, _notifier_rx) = channel::<steno_daemon::notifications::DictationEvent>(16);
+    let recorder = Recorder::with_wav_dir(
+        model,
+        TaskTracker::new(),
+        debug,
+        wav_dir(),
+        inject_tx,
+        notifier_tx,
+    );
     let token = CancellationToken::new();
     let recorder_task = tokio::spawn(recorder.listen(rx, token.clone()));
 

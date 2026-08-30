@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use steno_daemon::listener::KeyListener;
+use steno_daemon::notifications::{self, DictationEvent};
 use steno_daemon::recorder::{Recorder, RecorderCommand};
 use steno_daemon::uinput::{Injector, UinputDevice};
 use tokio::sync::mpsc::channel;
@@ -28,9 +29,19 @@ async fn main() -> Result<()> {
     // Ensure the transcription model is available.
     steno_daemon::model::ensure_parakeet_model().await?;
 
+    // Dictation lifecycle notifications ride the session bus through a
+    // dedicated task. An unreachable bus downgrades to discard mode inside
+    // `connect` — it never stops the daemon (unlike /dev/uinput below).
+    let (notifier_rx_tx, notifier_rx) = channel::<DictationEvent>(64);
+    let (notifier, resource) = notifications::Notifier::connect().await;
+    if let Some(resource) = resource {
+        tracker.spawn(notifications::serve_resource(resource, token.clone()));
+    }
+    tracker.spawn(notifier.listen(notifier_rx, token.clone()));
+
     // Create the virtual keyboard before anything else: the daemon must
     // not run in a state where captured text has nowhere to go.
-    let injector = Injector::new(UinputDevice::open()?);
+    let injector = Injector::with_notifier(UinputDevice::open()?, notifier_rx_tx.clone());
 
     // Text to inject flows from the recorder (transcription output) to
     // the injector task through this channel, FIFO.
@@ -49,7 +60,7 @@ async fn main() -> Result<()> {
         &model_dir,
         Some(model_config),
     )?));
-    let recorder = Recorder::new(model, tracker.clone(), debug, inject_tx);
+    let recorder = Recorder::new(model, tracker.clone(), debug, inject_tx, notifier_rx_tx);
 
     // Constructed only now, after the potentially multi-minute first-run
     // model download and load: KeyListener::new exclusively grabs evdev

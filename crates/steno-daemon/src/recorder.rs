@@ -1,7 +1,8 @@
 //! Recorder lifecycle: capture microphone audio on Start, write it to a
 //! timestamped WAV when debug mode is enabled, trigger Parakeet TDT
 //! transcription of the recording, and hand finished transcriptions to the
-//! injector task.
+//! injector task. Recording and transcription starts are announced as
+//! dictation events on the notification channel.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -9,6 +10,8 @@ use std::time::Duration;
 
 use parakeet_rs::Transcriber;
 use tokio::sync::mpsc::{Receiver, Sender};
+
+use crate::notifications::{self, DictationEvent};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
@@ -27,34 +30,44 @@ pub enum RecorderCommand {
     Stop,
 }
 
-pub struct Recorder {
-    model: Arc<Mutex<parakeet_rs::ParakeetTDT>>,
+pub struct Recorder<M = parakeet_rs::ParakeetTDT> {
+    model: Arc<Mutex<M>>,
     tracker: TaskTracker,
     debug: bool,
     wav_dir: PathBuf,
     session: Option<CaptureSession>,
     wav_path: Option<PathBuf>,
     inject_tx: Sender<String>,
+    notifier_tx: Sender<DictationEvent>,
 }
 
-impl Recorder {
+impl<M: Transcriber + Send + 'static> Recorder<M> {
     pub fn new(
-        model: Arc<Mutex<parakeet_rs::ParakeetTDT>>,
+        model: Arc<Mutex<M>>,
         tracker: TaskTracker,
         debug: bool,
         inject_tx: Sender<String>,
+        notifier_tx: Sender<DictationEvent>,
     ) -> Self {
-        Self::with_wav_dir(model, tracker, debug, PathBuf::from(WAV_DIR), inject_tx)
+        Self::with_wav_dir(
+            model,
+            tracker,
+            debug,
+            PathBuf::from(WAV_DIR),
+            inject_tx,
+            notifier_tx,
+        )
     }
 
     /// Build a recorder writing debug WAVs to `wav_dir` (tests inject a
     /// private directory so a concurrently running daemon cannot interfere).
     pub fn with_wav_dir(
-        model: Arc<Mutex<parakeet_rs::ParakeetTDT>>,
+        model: Arc<Mutex<M>>,
         tracker: TaskTracker,
         debug: bool,
         wav_dir: impl Into<PathBuf>,
         inject_tx: Sender<String>,
+        notifier_tx: Sender<DictationEvent>,
     ) -> Self {
         Self {
             model,
@@ -64,6 +77,7 @@ impl Recorder {
             session: None,
             wav_path: None,
             inject_tx,
+            notifier_tx,
         }
     }
 
@@ -140,6 +154,7 @@ impl Recorder {
 
     /// Announce the recording, attaching a debug WAV path when enabled.
     fn begin_capture(&mut self) {
+        notifications::emit(&self.notifier_tx, DictationEvent::RecordingStarted);
         if !self.debug {
             tracing::info!("recording started");
             return;
@@ -196,6 +211,7 @@ impl Recorder {
     /// in-flight transcriptions. A finished transcription's text is handed
     /// to the injector task.
     fn transcribe(&self, samples: Vec<f32>) {
+        notifications::emit(&self.notifier_tx, DictationEvent::TranscriptionStarted);
         let model = Arc::clone(&self.model);
         let inject_tx = self.inject_tx.clone();
         self.tracker.spawn(async move {
@@ -254,4 +270,86 @@ fn log_wav_result(
 /// Captured audio length in seconds.
 fn seconds(samples: &[f32]) -> f64 {
     samples.len() as f64 / wav::SAMPLE_RATE as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parakeet_rs::{TimestampMode, TranscriptionResult};
+    use tokio::sync::mpsc::channel;
+
+    /// Model that records nothing and answers with fixed text.
+    struct FakeModel;
+
+    impl Transcriber for FakeModel {
+        fn transcribe_samples(
+            &mut self,
+            _audio: Vec<f32>,
+            _sample_rate: u32,
+            _channels: u16,
+            _mode: Option<TimestampMode>,
+        ) -> parakeet_rs::Result<TranscriptionResult> {
+            Ok(TranscriptionResult {
+                text: "ok".to_string(),
+                tokens: Vec::new(),
+            })
+        }
+    }
+
+    fn recorder_with_events(
+        dir: &std::path::Path,
+    ) -> (Recorder<FakeModel>, Receiver<DictationEvent>) {
+        let model = Arc::new(Mutex::new(FakeModel));
+        let (inject_tx, _inject_rx) = channel::<String>(16);
+        let (notifier_tx, notifier_rx) = channel::<DictationEvent>(16);
+        let recorder = Recorder::with_wav_dir(
+            model,
+            TaskTracker::new(),
+            false,
+            dir,
+            inject_tx,
+            notifier_tx,
+        );
+        (recorder, notifier_rx)
+    }
+
+    #[test]
+    fn begin_capture_emits_recording_started() {
+        let dir = std::env::temp_dir();
+        let (mut recorder, mut events) = recorder_with_events(&dir);
+        recorder.begin_capture();
+        assert_eq!(events.try_recv().unwrap(), DictationEvent::RecordingStarted);
+        assert!(events.try_recv().is_err(), "exactly one event");
+    }
+
+    #[tokio::test]
+    async fn finish_capture_with_audio_emits_transcription_started() {
+        let dir = std::env::temp_dir();
+        let (mut recorder, mut events) = recorder_with_events(&dir);
+        recorder.finish_capture(vec![0.0; 1600], None).await;
+        assert_eq!(
+            events.recv().await,
+            Some(DictationEvent::TranscriptionStarted)
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_capture_without_audio_emits_nothing() {
+        let dir = std::env::temp_dir();
+        let (mut recorder, mut events) = recorder_with_events(&dir);
+        // Empty samples: capture-error or silent capture, no transcription.
+        recorder
+            .finish_capture(Vec::new(), Some("boom".to_string()))
+            .await;
+        recorder.finish_capture(Vec::new(), None).await;
+        assert!(events.try_recv().is_err(), "no event without audio");
+    }
+
+    #[test]
+    fn emit_on_closed_notifier_channel_does_not_panic() {
+        let dir = std::env::temp_dir();
+        let (mut recorder, events) = recorder_with_events(&dir);
+        drop(events);
+        recorder.begin_capture(); // must not panic
+    }
 }

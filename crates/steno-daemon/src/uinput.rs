@@ -3,7 +3,10 @@
 //! The text-to-keystroke translation is pure and OS-free so it can be
 //! unit-tested without a device; only the injector touches `/dev/uinput`.
 
+use tokio::sync::mpsc::Sender;
 use uinput::event::keyboard::Key;
+
+use crate::notifications::{self, DictationEvent};
 
 /// A single keyboard transition: press (`true`) or release (`false`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,13 +257,29 @@ impl Device for UinputDevice {
 }
 
 /// Types text into the focused application through a [`Device`].
+///
+/// After each successful injection it announces `DictationFinished` on the
+/// notification channel (when one was configured), so the desktop learns
+/// the dictation is over only once the text has fully landed.
 pub struct Injector<D: Device> {
     device: D,
+    notifier_tx: Option<Sender<DictationEvent>>,
 }
 
 impl<D: Device> Injector<D> {
     pub fn new(device: D) -> Self {
-        Self { device }
+        Self {
+            device,
+            notifier_tx: None,
+        }
+    }
+
+    /// Injector whose successful injections emit `DictationFinished`.
+    pub fn with_notifier(device: D, notifier_tx: Sender<DictationEvent>) -> Self {
+        Self {
+            device,
+            notifier_tx: Some(notifier_tx),
+        }
     }
 
     /// Inject `text`: unsupported characters are skipped with a warning,
@@ -287,11 +306,20 @@ impl<D: Device> Injector<D> {
         ct: tokio_util::sync::CancellationToken,
     ) {
         while let Some(text) = Self::next_text(&mut rx, &ct).await {
-            if let Err(err) = self.inject(&text) {
-                tracing::error!("text injection failed: {err:#}");
+            match self.inject(&text) {
+                Ok(()) => self.report_finished(),
+                Err(err) => tracing::error!("text injection failed: {err:#}"),
             }
         }
         // Exiting drops the device, destroying the virtual keyboard.
+    }
+
+    /// Announce that the last injected text fully reached the device. A
+    /// failed injection never reports completion.
+    fn report_finished(&self) {
+        if let Some(tx) = &self.notifier_tx {
+            notifications::emit(tx, DictationEvent::DictationFinished);
+        }
     }
 
     /// The next injection request, or None once the channel is closed or
@@ -393,6 +421,49 @@ mod tests {
             .await
             .expect("task exits on cancel")
             .unwrap();
+    }
+
+    /// Device that fails every write, to prove failures emit no completion.
+    struct FailingDevice;
+
+    impl Device for FailingDevice {
+        fn write_events(&mut self, _events: &[KeyEvent]) -> anyhow::Result<()> {
+            anyhow::bail!("device on fire")
+        }
+    }
+
+    #[tokio::test]
+    async fn listen_emits_finished_once_per_successful_text() {
+        let (ntx, mut nrx) = channel::<DictationEvent>(16);
+        let injector = Injector::with_notifier(MockDevice::default(), ntx);
+        let (tx, rx) = channel::<String>(16);
+        let task = tokio::spawn(injector.listen(rx, CancellationToken::new()));
+
+        tx.send("ab".to_string()).await.unwrap();
+        tx.send("cd".to_string()).await.unwrap();
+        drop(tx);
+        task.await.unwrap();
+
+        assert_eq!(nrx.recv().await, Some(DictationEvent::DictationFinished));
+        assert_eq!(nrx.recv().await, Some(DictationEvent::DictationFinished));
+        assert!(nrx.recv().await.is_none(), "exactly one event per text");
+    }
+
+    #[tokio::test]
+    async fn failed_injection_emits_no_finished_event() {
+        let (ntx, mut nrx) = channel::<DictationEvent>(16);
+        let injector = Injector::with_notifier(FailingDevice, ntx);
+        let (tx, rx) = channel::<String>(16);
+        let task = tokio::spawn(injector.listen(rx, CancellationToken::new()));
+
+        tx.send("oops".to_string()).await.unwrap();
+        drop(tx);
+        task.await.unwrap();
+
+        assert!(
+            nrx.recv().await.is_none(),
+            "failed injection reports no completion"
+        );
     }
 
     #[test]
