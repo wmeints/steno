@@ -1,8 +1,10 @@
 name: Release daemon package
 
+# Triggered by pushing a version tag: {major}.{minor}.{revision}, e.g. 1.0.0.
 on:
   push:
-    branches: [main]
+    tags:
+      - "*.*.*"
 
 permissions:
   contents: write
@@ -32,7 +34,8 @@ jobs:
       - name: Assemble package
         run: |
           set -euo pipefail
-          PKG="steno-daemon-$(date -u +%Y%m%d)-${GITHUB_SHA::7}"
+          [[ "$GITHUB_REF_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag '$GITHUB_REF_NAME' is not {major}.{minor}.{revision}"; exit 1; }
+          PKG="steno-daemon-${GITHUB_REF_NAME}"
           mkdir -p "$PKG"
           # cp -L dereferences the ort cache symlinks into real files.
           # The provider .so files MUST sit beside the binary: ONNX Runtime
@@ -54,10 +57,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$PKG" "${PKG}.tar.gz" \
-            --prerelease \
-            --title "Steno nightly-${GITHUB_SHA::7}" \
-            --notes "Automatically built from main (${GITHUB_SHA}).
+          gh release create "$GITHUB_REF_NAME" "${PKG}.tar.gz" \
+            --title "Steno ${GITHUB_REF_NAME}" \
+            --notes "Release ${GITHUB_REF_NAME}, built from commit ${GITHUB_SHA}.
 
           Contents: stenod daemon binary, ONNX Runtime provider libraries
           (must stay beside the binary), systemd user unit, udev rule, and
