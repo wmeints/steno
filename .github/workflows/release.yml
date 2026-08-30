@@ -1,0 +1,67 @@
+name: Release daemon package
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Build and package stenod
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Same build prerequisites as CI. With the default `cuda` feature,
+      # ort-sys downloads the CUDA-13 ONNX Runtime prebuilts from cdn.pyke.io
+      # at first cold build; cargo leaves the provider libraries as files
+      # (symlinks) beside the binary in target/release.
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libpipewire-0.3-dev libspa-0.2-dev libclang-dev
+
+      - name: Build daemon (release)
+        run: cargo build --release -p steno-daemon
+
+      - name: Assemble package
+        run: |
+          set -euo pipefail
+          PKG="steno-daemon-$(date -u +%Y%m%d)-${GITHUB_SHA::7}"
+          mkdir -p "$PKG"
+          # cp -L dereferences the ort cache symlinks into real files.
+          # The provider .so files MUST sit beside the binary: ONNX Runtime
+          # dlopen's them via $ORIGIN and silently falls back to CPU without.
+          cp -L target/release/stenod                              "$PKG/"
+          cp -L target/release/libonnxruntime_providers_shared.so  "$PKG/"
+          cp -L target/release/libonnxruntime_providers_cuda.so    "$PKG/"
+          chmod 0755 "$PKG/stenod"
+          install -m 0644 packaging/stenod.service                              "$PKG/"
+          install -m 0644 packaging/99-uinput.rules                             "$PKG/"
+          install -m 0755 scripts/install.sh                                    "$PKG/"
+          install -m 0644 README.md                                             "$PKG/"
+          echo "PKG=$PKG" >> "$GITHUB_ENV"
+
+      - name: Create tar.gz archive
+        run: tar -czf "${PKG}.tar.gz" "$PKG"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$PKG" \
+            --prerelease \
+            --title "stenod $PKG (nightly)" \
+            --notes "Automatically built from main (${GITHUB_SHA}).
+
+          Contents: stenod daemon binary, ONNX Runtime provider libraries
+          (must stay beside the binary), systemd user unit, udev rule, and
+          install.sh. Extract the archive and run ./install.sh.
+
+          Note: requires CUDA runtime libraries at ~/.local/lib/steno-cuda
+          (or an LD_LIBRARY_PATH drop-in via 'systemctl --user edit stenod')."
